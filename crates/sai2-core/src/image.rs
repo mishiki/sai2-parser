@@ -165,6 +165,7 @@ pub fn decode_integrated_image(
                     &mut deltas[..tile_width * OUTPUT_CHANNELS],
                     tile_width,
                     input_channels,
+                    OUTPUT_CHANNELS,
                 )?;
                 compressed = compressed
                     .get(consumed..)
@@ -224,11 +225,15 @@ pub(crate) fn decode_delta_row(
     deltas: &mut [i16],
     pixel_count: usize,
     input_channels: usize,
+    output_channels: usize,
 ) -> Result<usize, ParseError> {
     let expected = pixel_count
-        .checked_mul(OUTPUT_CHANNELS)
+        .checked_mul(output_channels)
         .ok_or_else(|| malformed("row size overflow"))?;
-    if deltas.len() != expected || !(1..=4).contains(&input_channels) {
+    if deltas.len() != expected
+        || !(1..=4).contains(&input_channels)
+        || !(input_channels..=4).contains(&output_channels)
+    {
         return Err(malformed("invalid row buffer or channel count"));
     }
 
@@ -249,7 +254,7 @@ pub(crate) fn decode_delta_row(
 
             match opcode {
                 0 => {
-                    deltas[written * OUTPUT_CHANNELS + channel] = 0;
+                    deltas[written * output_channels + channel] = 0;
                     written += 1;
                 }
                 1..=14 => {
@@ -258,7 +263,7 @@ pub(crate) fn decode_delta_row(
                     let magnitude = ((1_u32 << opcode) | low) - 1;
                     let magnitude = i16::try_from(magnitude)
                         .map_err(|_| malformed("delta exceeds signed 16-bit range"))?;
-                    deltas[written * OUTPUT_CHANNELS + channel] =
+                    deltas[written * output_channels + channel] =
                         if negative { -magnitude } else { magnitude };
                     written += 1;
                 }
@@ -390,7 +395,8 @@ mod tests {
         let compressed = encode_row(&[[1, -1, 2, -2, 0]]);
         let mut deltas = [0_i16; 5 * OUTPUT_CHANNELS];
 
-        let consumed = decode_delta_row(&compressed, &mut deltas, 5, 1).expect("row should decode");
+        let consumed = decode_delta_row(&compressed, &mut deltas, 5, 1, OUTPUT_CHANNELS)
+            .expect("row should decode");
 
         assert_eq!(consumed, compressed.len());
         assert_eq!(
@@ -411,7 +417,7 @@ mod tests {
         let mut deltas = [0_i16; 8 * OUTPUT_CHANNELS];
 
         assert_eq!(
-            decode_delta_row(&writer.finish(), &mut deltas, 8, 3),
+            decode_delta_row(&writer.finish(), &mut deltas, 8, 3, OUTPUT_CHANNELS),
             Err(malformed("zero run exceeds row width"))
         );
     }

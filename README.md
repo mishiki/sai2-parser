@@ -36,6 +36,14 @@ the first tested slice of layered export:
 - decodes observed sparse, offset `lpix` block grids into straight-alpha RGBA;
 - writes those decoded layers, Unicode names, visibility, opacity, and basic
   blend modes to a PSD 1.0 file with the `sai2topsd` CLI;
+- decodes observed folder depth and pass-through mode and writes native PSD
+  section-divider records;
+- decodes observed grayscale `mpix` layer masks and writes native PSD user-mask
+  channels;
+- exposes observed linework Bezier controls, pressure, width scale, brush size,
+  and color as typed Rust data;
+- exposes observed shape paths, Bezier controls, and fill color as typed Rust
+  data;
 - reverses SAI2's top-to-bottom layer records into PSD compositing order and,
   for the observed opaque canvas mode, adds an editable white canvas-background
   layer so recompositing the PSD layers reproduces SAI2's saved appearance;
@@ -44,14 +52,14 @@ the first tested slice of layered export:
   layer payloads bit-for-bit for future decoders.
 
 The decoder has been verified against three purpose-built 32 x 32 fixtures and
-a 300 x 300 artwork fixture whose layer uses a sparse 22 x 32 block grid with a
-negative origin. The saved composite matched the supplied 300 x 300 reference
-PNG pixel-for-pixel, and its independently decoded raster layer recomposites
-within one 8-bit level (the expected straight-alpha quantization bound). The
-individual red and green raster layers in the 32 x 32 two-layer fixture also
-decode successfully. Folders, masks, vector linework, shapes, and text are not
-decoded yet; `sai2topsd` reports an error instead of silently flattening an
-unsupported document.
+two 300 x 300 artwork fixtures. The newer complex fixture contains a
+pass-through folder, three raster layers, a grayscale layer mask, a
+pressure-sensitive linework stroke, a shape path, and several blend modes. Its
+saved composite matches the supplied reference pixel-for-pixel. Folder
+structure, the mask, and blend modes are represented natively in the PSD.
+Linework and shape geometry are decoded and preserved, but are currently
+exported as transparent PSD pixel placeholders: rasterizing them and emitting
+native PSD vector objects remain future work. Text layers are not decoded yet.
 
 ## Usage
 
@@ -74,7 +82,8 @@ cargo run --bin sai2topsd -- example.sai2 output.psd
 The generated PSD carries the saved `intg` image as its composite preview, so
 applications that only read the flattened PSD view still see the exact saved
 canvas. Applications with PSD layer support can edit the independently decoded
-raster layers. Each PSD layer also carries a private `s2ly` tagged block with
+raster layers, folder structure, masks, and mapped blend modes. Each PSD layer
+also carries a private `s2ly` tagged block with
 the exact source `layr`, `lpix`, and any other chunks that share its object ID.
 PSD readers are required to skip unknown tagged blocks; this has been tested
 with `psd-tools`. Applications may discard private metadata when re-saving a
@@ -85,6 +94,11 @@ level of the saved integrated image. The 300 x 300 artwork recomposites within
 two levels. Its original integrated image remains embedded pixel-for-pixel as
 the PSD composite preview. Transparent SAI2 canvases do not receive the
 synthetic white background layer.
+
+For unsupported rendered layer types such as the currently decoded linework
+and shape layers, `sai2topsd` prints an explicit placeholder notice. The PSD's
+saved composite preview is still the exact SAI2 `intg` image, while those
+individual PSD layers are transparent until a renderer is implemented.
 
 The PNG writer uses streaming, uncompressed DEFLATE blocks. This keeps memory
 usage bounded beyond the decoded RGBA image, at the cost of larger PNG files.

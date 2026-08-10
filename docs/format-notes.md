@@ -176,6 +176,50 @@ one 8-bit level and from the 300 x 300 composite by at most two levels. The
 remaining error is consistent with converting SAI2's 14-bit premultiplied
 channels into PSD's 8-bit straight-alpha representation and renderer rounding.
 
+### Folder hierarchy, masks, linework, and shapes
+
+An owned 300 x 300 fixture contains six `layr` records in SAI2's top-to-bottom
+order: a folder, linework, masked raster, raster, shape, and solid-color raster.
+The low 16 bits of the layer flag words are `0, 1, 1, 1, 1, 0`; they exactly
+describe folder nesting depth. The folder has type `fold`, blend key `pass`,
+and high flag bits `0x40010000`. `sai2topsd` maps the hierarchy to PSD `lsct`
+records (type 1 for the folder and type 3 for its bounding divider) and retains
+pass-through mode.
+
+The masked layer's `layr` parameter `lmsk` is 24 bytes. In this fixture it
+contains mask object ID 12, block origin `(0, 0)`, a 10 x 10 block grid, and
+four trailing flag bytes `[1, 1, 1, 0]`. The matching `mpix` chunk is a
+one-channel form of the block DPCM family used by `lpix`. It decodes to a
+300 x 300 grayscale image with observed values from 0 through 250. PSD export
+stores this as channel ID -2 with a full-canvas 20-byte layer-mask record. The
+exact `mpix` body is also included in the owning layer's `s2ly` block.
+
+The fixture's `liwk` body contains a `strk` container. Its observed color is
+four 14-bit BGRA values, its brush size is a 32-bit float, and its one stroke
+contains an origin plus thirteen 64-byte point records. Each point has an ID;
+double-precision position, preceding control point, and following control point
+pairs; single-precision pressure and width scale; and a 32-bit flag word.
+Coordinates are relative to the stroke origin. The typed decoder retains all
+fields, including zero and fractional pressure values.
+
+The fixture's `shap` body contains a 14-bit BGRA fill color and one path. The
+path stores a double-precision origin and four point records using the same
+position/control-point layout, followed by flags. Adding the origin to the
+relative positions produces the observed rectangle corners `(18, 20)`,
+`(286, 20)`, `(286, 288)`, and `(18, 288)`.
+
+Observed blend keys map to PSD as follows: `pass` remains `pass`, `burn` maps
+to Color Burn (`idiv`), and the user-confirmed SAI2 mode 比較（暗） stored as
+`litn` maps to Darken (`dark`). These mappings are fixture-backed but are not a
+complete blend-mode table.
+
+The PSD writer currently gives decoded linework and shape layers transparent
+pixel channels while preserving their typed geometry and exact source chunks.
+The PSD composite preview is therefore pixel-identical to SAI2's saved `intg`,
+but recompositing only editable PSD layers omits those two appearances.
+Accurate pressure-sensitive linework rasterization and native PSD vector-shape
+output remain open work.
+
 ## Assumed by the current implementation
 
 - The 16-byte signature is required exactly; accepting alternate magic values
@@ -211,6 +255,13 @@ channels into PSD's 8-bit straight-alpha representation and renderer rounding.
 - Exact flag-bit semantics of the observed `5N` uniform-block channel words,
   and whether other `lpix` block-grid variants use the same placement rules.
 - Meanings of all canvas-background flag values beyond the two observed modes.
+- Folder flag meanings beyond the observed nesting-depth low word and the
+  `0x40000000` bit on one `fold` layer.
+- Semantics of unobserved `lmsk` flag combinations and mask block variants.
+- Linework stroke kinds, point flags, width-scale semantics, brush parameters,
+  and rendering details beyond the one observed stroke.
+- Shape path and point flags, open paths, stroke parameters, and compound or
+  multiple-path fill rules.
 - Whether other format tags change the DPCM predictor, channel order, bitstream,
   marker, or padding rules.
 

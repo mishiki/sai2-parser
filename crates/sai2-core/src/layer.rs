@@ -7,8 +7,251 @@ const BLOCK_PIXELS: usize = BLOCK_SIZE * BLOCK_SIZE;
 const CHANNELS: usize = 4;
 const CHANNEL_MAX: i32 = 0x4000;
 
-/// Metadata and, when supported, decoded pixels for one SAI2 layer.
+/// An eight-bit grayscale image, used for decoded SAI2 layer masks.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrayImage {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
+impl GrayImage {
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    #[must_use]
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+}
+
+/// Metadata and, when supported, decoded pixels for one SAI2 layer mask.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sai2Mask {
+    id: u32,
+    block_origin_x: i32,
+    block_origin_y: i32,
+    block_width: u32,
+    block_height: u32,
+    flags: [u8; 4],
+    source_chunks: Vec<Chunk>,
+    image: Option<GrayImage>,
+}
+
+/// One editable point from an observed SAI2 linework stroke.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sai2StrokePoint {
+    id: u32,
+    position: [f64; 2],
+    control_before: [f64; 2],
+    control_after: [f64; 2],
+    pressure: f32,
+    width_scale: f32,
+    flags: u32,
+}
+
+impl Sai2StrokePoint {
+    #[must_use]
+    pub const fn id(&self) -> u32 {
+        self.id
+    }
+    #[must_use]
+    pub const fn position(&self) -> [f64; 2] {
+        self.position
+    }
+    #[must_use]
+    pub const fn control_before(&self) -> [f64; 2] {
+        self.control_before
+    }
+    #[must_use]
+    pub const fn control_after(&self) -> [f64; 2] {
+        self.control_after
+    }
+    #[must_use]
+    pub const fn pressure(&self) -> f32 {
+        self.pressure
+    }
+    #[must_use]
+    pub const fn width_scale(&self) -> f32 {
+        self.width_scale
+    }
+    #[must_use]
+    pub const fn flags(&self) -> u32 {
+        self.flags
+    }
+}
+
+/// One observed SAI2 linework stroke and its editable Bezier points.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sai2Stroke {
+    id: u32,
+    origin: [f64; 2],
+    kind: u32,
+    points: Vec<Sai2StrokePoint>,
+}
+
+impl Sai2Stroke {
+    #[must_use]
+    pub const fn id(&self) -> u32 {
+        self.id
+    }
+    #[must_use]
+    pub const fn origin(&self) -> [f64; 2] {
+        self.origin
+    }
+    #[must_use]
+    pub const fn kind(&self) -> u32 {
+        self.kind
+    }
+    #[must_use]
+    pub fn points(&self) -> &[Sai2StrokePoint] {
+        &self.points
+    }
+}
+
+/// Structured content decoded from an observed `liwk` chunk.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sai2Linework {
+    color_bgra14: Option<[u16; 4]>,
+    brush_size: Option<f32>,
+    strokes: Vec<Sai2Stroke>,
+}
+
+impl Sai2Linework {
+    #[must_use]
+    pub const fn color_bgra14(&self) -> Option<[u16; 4]> {
+        self.color_bgra14
+    }
+    #[must_use]
+    pub const fn brush_size(&self) -> Option<f32> {
+        self.brush_size
+    }
+    #[must_use]
+    pub fn strokes(&self) -> &[Sai2Stroke] {
+        &self.strokes
+    }
+}
+
+/// One editable path point from an observed SAI2 shape.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sai2ShapePoint {
+    id: u32,
+    position: [f64; 2],
+    control_before: [f64; 2],
+    control_after: [f64; 2],
+    flags: u32,
+}
+
+impl Sai2ShapePoint {
+    #[must_use]
+    pub const fn id(&self) -> u32 {
+        self.id
+    }
+    #[must_use]
+    pub const fn position(&self) -> [f64; 2] {
+        self.position
+    }
+    #[must_use]
+    pub const fn control_before(&self) -> [f64; 2] {
+        self.control_before
+    }
+    #[must_use]
+    pub const fn control_after(&self) -> [f64; 2] {
+        self.control_after
+    }
+    #[must_use]
+    pub const fn flags(&self) -> u32 {
+        self.flags
+    }
+}
+
+/// One closed or open path from an observed SAI2 shape layer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sai2ShapePath {
+    id: u32,
+    origin: [f64; 2],
+    flags: u32,
+    points: Vec<Sai2ShapePoint>,
+}
+
+impl Sai2ShapePath {
+    #[must_use]
+    pub const fn id(&self) -> u32 {
+        self.id
+    }
+    #[must_use]
+    pub const fn origin(&self) -> [f64; 2] {
+        self.origin
+    }
+    #[must_use]
+    pub const fn flags(&self) -> u32 {
+        self.flags
+    }
+    #[must_use]
+    pub fn points(&self) -> &[Sai2ShapePoint] {
+        &self.points
+    }
+}
+
+/// Structured content decoded from an observed `shap` chunk.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sai2Shape {
+    fill_bgra14: Option<[u16; 4]>,
+    paths: Vec<Sai2ShapePath>,
+}
+
+impl Sai2Shape {
+    #[must_use]
+    pub const fn fill_bgra14(&self) -> Option<[u16; 4]> {
+        self.fill_bgra14
+    }
+    #[must_use]
+    pub fn paths(&self) -> &[Sai2ShapePath] {
+        &self.paths
+    }
+}
+
+impl Sai2Mask {
+    #[must_use]
+    pub const fn id(&self) -> u32 {
+        self.id
+    }
+
+    #[must_use]
+    pub const fn block_origin(&self) -> (i32, i32) {
+        (self.block_origin_x, self.block_origin_y)
+    }
+
+    #[must_use]
+    pub const fn block_dimensions(&self) -> (u32, u32) {
+        (self.block_width, self.block_height)
+    }
+
+    #[must_use]
+    pub const fn flags(&self) -> [u8; 4] {
+        self.flags
+    }
+
+    #[must_use]
+    pub fn source_chunks(&self) -> &[Chunk] {
+        &self.source_chunks
+    }
+
+    #[must_use]
+    pub const fn image(&self) -> Option<&GrayImage> {
+        self.image.as_ref()
+    }
+}
+
+/// Metadata and, when supported, decoded pixels for one SAI2 layer.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Sai2Layer {
     id: u32,
     layer_type: FourCc,
@@ -20,6 +263,9 @@ pub struct Sai2Layer {
     block_origin_y: i32,
     block_width: u32,
     tile_count: u32,
+    mask: Option<Sai2Mask>,
+    linework: Option<Sai2Linework>,
+    shape: Option<Sai2Shape>,
     source_chunks: Vec<Chunk>,
     image: Option<RgbaImage>,
 }
@@ -65,6 +311,18 @@ impl Sai2Layer {
     pub const fn image(&self) -> Option<&RgbaImage> {
         self.image.as_ref()
     }
+    #[must_use]
+    pub const fn mask(&self) -> Option<&Sai2Mask> {
+        self.mask.as_ref()
+    }
+    #[must_use]
+    pub const fn linework(&self) -> Option<&Sai2Linework> {
+        self.linework.as_ref()
+    }
+    #[must_use]
+    pub const fn shape(&self) -> Option<&Sai2Shape> {
+        self.shape.as_ref()
+    }
     /// Returns the original SAI2 chunks associated with this layer.
     ///
     /// The records retain offsets into the input rather than copying chunk
@@ -77,6 +335,18 @@ impl Sai2Layer {
     #[must_use]
     pub const fn visible(&self) -> bool {
         self.flags & 0x0001_0000 != 0
+    }
+
+    /// Returns the observed folder nesting level stored in the low flag word.
+    #[must_use]
+    pub const fn nesting_level(&self) -> u16 {
+        let bytes = self.flags.to_le_bytes();
+        u16::from_le_bytes([bytes[0], bytes[1]])
+    }
+
+    #[must_use]
+    pub fn is_folder(&self) -> bool {
+        self.layer_type.as_bytes() == *b"fold"
     }
 }
 
@@ -113,12 +383,54 @@ pub fn decode_layers(input: &[u8], limits: DecodeLimits) -> Result<Vec<Sai2Layer
     {
         let body = chunk_body(input, chunk)?;
         let mut layer = parse_layer(body)?;
+        let mask_id = layer.mask.as_ref().map(Sai2Mask::id);
         layer.source_chunks = document
             .chunks()
             .iter()
-            .filter(|candidate| candidate.object_id() == layer.id)
+            .filter(|candidate| {
+                candidate.object_id() == layer.id || Some(candidate.object_id()) == mask_id
+            })
             .cloned()
             .collect();
+        if let Some(mask) = &mut layer.mask {
+            mask.source_chunks = document
+                .chunks()
+                .iter()
+                .filter(|candidate| candidate.object_id() == mask.id)
+                .cloned()
+                .collect();
+            if let Some(pixel_chunk) = mask
+                .source_chunks
+                .iter()
+                .find(|candidate| candidate.kind() == FourCc::from_bytes(*b"mpix"))
+            {
+                mask.image = Some(decode_mask_image(
+                    chunk_body(input, pixel_chunk)?,
+                    mask.block_origin_x,
+                    mask.block_origin_y,
+                    mask.block_width,
+                    mask.block_height,
+                    header.width(),
+                    header.height(),
+                )?);
+            }
+        }
+        if layer.layer_type == FourCc::from_bytes(*b"liwk")
+            && let Some(data_chunk) = layer
+                .source_chunks
+                .iter()
+                .find(|candidate| candidate.kind() == FourCc::from_bytes(*b"liwk"))
+        {
+            layer.linework = Some(decode_linework(chunk_body(input, data_chunk)?)?);
+        }
+        if layer.layer_type == FourCc::from_bytes(*b"shap")
+            && let Some(data_chunk) = layer
+                .source_chunks
+                .iter()
+                .find(|candidate| candidate.kind() == FourCc::from_bytes(*b"shap"))
+        {
+            layer.shape = Some(decode_shape(chunk_body(input, data_chunk)?)?);
+        }
         if layer.layer_type == FourCc::from_bytes(*b"norm") {
             if let Some(pixel_chunk) = document.chunks().iter().find(|candidate| {
                 candidate.kind() == FourCc::from_bytes(*b"lpix")
@@ -157,6 +469,7 @@ fn parse_layer(body: &[u8]) -> Result<Sai2Layer, ParseError> {
     let flags = u32::from_le_bytes(read(body, 52)?);
 
     let mut name = format!("Layer {id}");
+    let mut mask = None;
     let mut offset = LAYER_HEADER_LEN;
     while offset + 4 <= body.len() {
         let tag = read::<4>(body, offset)?;
@@ -175,6 +488,8 @@ fn parse_layer(body: &[u8]) -> Result<Sai2Layer, ParseError> {
             .ok_or_else(|| layer_error("truncated layer parameter"))?;
         if tag == *b"name" {
             name = decode_name(value)?;
+        } else if tag == *b"lmsk" {
+            mask = Some(decode_mask_descriptor(value)?);
         }
         offset = end;
     }
@@ -190,9 +505,267 @@ fn parse_layer(body: &[u8]) -> Result<Sai2Layer, ParseError> {
         block_origin_y,
         block_width,
         tile_count,
+        mask,
+        linework: None,
+        shape: None,
         source_chunks: Vec::new(),
         image: None,
     })
+}
+
+fn decode_mask_descriptor(value: &[u8]) -> Result<Sai2Mask, ParseError> {
+    if value.len() != 24 {
+        return Err(layer_error("unsupported layer-mask descriptor length"));
+    }
+    Ok(Sai2Mask {
+        id: u32::from_le_bytes(read(value, 0)?),
+        block_origin_x: i32::from_le_bytes(read(value, 4)?),
+        block_origin_y: i32::from_le_bytes(read(value, 8)?),
+        block_width: u32::from_le_bytes(read(value, 12)?),
+        block_height: u32::from_le_bytes(read(value, 16)?),
+        flags: read(value, 20)?,
+        source_chunks: Vec::new(),
+        image: None,
+    })
+}
+
+fn decode_linework(body: &[u8]) -> Result<Sai2Linework, ParseError> {
+    let mut result = Sai2Linework {
+        color_bgra14: None,
+        brush_size: None,
+        strokes: Vec::new(),
+    };
+    let mut offset = 0_usize;
+    while offset + 4 <= body.len() {
+        let tag = read::<4>(body, offset)?;
+        if tag == [0; 4] {
+            if body[offset..].iter().any(|byte| *byte != 0) {
+                return Err(layer_error("invalid liwk padding"));
+            }
+            return Ok(result);
+        }
+        let length = usize::try_from(u32::from_le_bytes(read(body, offset + 4)?))
+            .map_err(|_| layer_error("linework record is too large"))?;
+        let start = offset + 8;
+        let end = start
+            .checked_add(length)
+            .ok_or_else(|| layer_error("linework record overflow"))?;
+        let value = body
+            .get(start..end)
+            .ok_or_else(|| layer_error("truncated linework record"))?;
+        if tag == *b"strk" {
+            decode_stroke_container(value, &mut result)?;
+        }
+        offset = end;
+    }
+    Err(layer_error("linework chunk has no terminator"))
+}
+
+fn decode_stroke_container(value: &[u8], result: &mut Sai2Linework) -> Result<(), ParseError> {
+    if value.len() < 16 {
+        return Err(layer_error("truncated linework stroke container"));
+    }
+    let mut offset = 8_usize;
+    loop {
+        let tag = read::<4>(value, offset)?;
+        if tag == [0; 4] {
+            offset += 4;
+            break;
+        }
+        let length = usize::try_from(u32::from_le_bytes(read(value, offset + 4)?))
+            .map_err(|_| layer_error("linework parameter is too large"))?;
+        let start = offset + 8;
+        let end = start
+            .checked_add(length)
+            .ok_or_else(|| layer_error("linework parameter overflow"))?;
+        let parameter = value
+            .get(start..end)
+            .ok_or_else(|| layer_error("truncated linework parameter"))?;
+        match tag {
+            value if value == *b"scol" => result.color_bgra14 = Some(decode_color14(parameter)?),
+            value if value == *b"inkd" && parameter.len() >= 4 => {
+                let size = f32::from_le_bytes(read(parameter, 0)?);
+                if !size.is_finite() {
+                    return Err(layer_error("non-finite linework brush size"));
+                }
+                result.brush_size = Some(size);
+            }
+            _ => {}
+        }
+        offset = end;
+    }
+
+    let stroke_count = usize::try_from(u32::from_le_bytes(read(value, offset)?))
+        .map_err(|_| layer_error("too many linework strokes"))?;
+    offset += 4;
+    for _ in 0..stroke_count {
+        let header_end = offset
+            .checked_add(32)
+            .ok_or_else(|| layer_error("linework stroke header overflow"))?;
+        if header_end > value.len() {
+            return Err(layer_error("truncated linework stroke header"));
+        }
+        let id = u32::from_le_bytes(read(value, offset)?);
+        let origin = [read_f64(value, offset + 12)?, read_f64(value, offset + 20)?];
+        let kind = u32::from_le_bytes(read(value, offset + 28)?);
+        offset = header_end;
+        let mut points = Vec::new();
+        loop {
+            let point_id = u32::from_le_bytes(read(value, offset)?);
+            if point_id == 0 {
+                offset += 4;
+                break;
+            }
+            let end = offset
+                .checked_add(64)
+                .ok_or_else(|| layer_error("linework point overflow"))?;
+            if end > value.len() {
+                return Err(layer_error("truncated linework point"));
+            }
+            let point = Sai2StrokePoint {
+                id: point_id,
+                position: [read_f64(value, offset + 4)?, read_f64(value, offset + 12)?],
+                control_before: [read_f64(value, offset + 20)?, read_f64(value, offset + 28)?],
+                control_after: [read_f64(value, offset + 36)?, read_f64(value, offset + 44)?],
+                pressure: read_f32(value, offset + 52)?,
+                width_scale: read_f32(value, offset + 56)?,
+                flags: u32::from_le_bytes(read(value, offset + 60)?),
+            };
+            points.push(point);
+            offset = end;
+        }
+        result.strokes.push(Sai2Stroke {
+            id,
+            origin,
+            kind,
+            points,
+        });
+    }
+    Ok(())
+}
+
+fn decode_shape(body: &[u8]) -> Result<Sai2Shape, ParseError> {
+    if body.len() < 8 || read::<4>(body, 0)? != *b"shap" {
+        return Err(layer_error("invalid shape chunk"));
+    }
+    let length = usize::try_from(u32::from_le_bytes(read(body, 4)?))
+        .map_err(|_| layer_error("shape data is too large"))?;
+    let end = 8_usize
+        .checked_add(length)
+        .ok_or_else(|| layer_error("shape data overflow"))?;
+    let value = body
+        .get(8..end)
+        .ok_or_else(|| layer_error("truncated shape data"))?;
+    if body[end..].iter().any(|byte| *byte != 0) {
+        return Err(layer_error("invalid shape padding"));
+    }
+    decode_shape_container(value)
+}
+
+fn decode_shape_container(value: &[u8]) -> Result<Sai2Shape, ParseError> {
+    if value.len() < 16 {
+        return Err(layer_error("truncated shape container"));
+    }
+    let mut result = Sai2Shape {
+        fill_bgra14: None,
+        paths: Vec::new(),
+    };
+    let mut offset = 8_usize;
+    loop {
+        let tag = read::<4>(value, offset)?;
+        if tag == [0; 4] {
+            offset += 4;
+            break;
+        }
+        let length = usize::try_from(u32::from_le_bytes(read(value, offset + 4)?))
+            .map_err(|_| layer_error("shape parameter is too large"))?;
+        let start = offset + 8;
+        let end = start
+            .checked_add(length)
+            .ok_or_else(|| layer_error("shape parameter overflow"))?;
+        let parameter = value
+            .get(start..end)
+            .ok_or_else(|| layer_error("truncated shape parameter"))?;
+        if tag == *b"fcol" {
+            result.fill_bgra14 = Some(decode_color14(parameter)?);
+        }
+        offset = end;
+    }
+
+    let path_count = usize::try_from(u32::from_le_bytes(read(value, offset)?))
+        .map_err(|_| layer_error("too many shape paths"))?;
+    offset += 4;
+    for _ in 0..path_count {
+        let header_end = offset
+            .checked_add(32)
+            .ok_or_else(|| layer_error("shape path header overflow"))?;
+        if header_end > value.len() {
+            return Err(layer_error("truncated shape path header"));
+        }
+        let id = u32::from_le_bytes(read(value, offset)?);
+        let origin = [read_f64(value, offset + 12)?, read_f64(value, offset + 20)?];
+        let flags = u32::from_le_bytes(read(value, offset + 28)?);
+        offset = header_end;
+        let mut points = Vec::new();
+        loop {
+            let point_id = u32::from_le_bytes(read(value, offset)?);
+            if point_id == 0 {
+                offset += 4;
+                break;
+            }
+            let end = offset
+                .checked_add(64)
+                .ok_or_else(|| layer_error("shape point overflow"))?;
+            if end > value.len() {
+                return Err(layer_error("truncated shape point"));
+            }
+            points.push(Sai2ShapePoint {
+                id: point_id,
+                position: [read_f64(value, offset + 4)?, read_f64(value, offset + 12)?],
+                control_before: [read_f64(value, offset + 20)?, read_f64(value, offset + 28)?],
+                control_after: [read_f64(value, offset + 36)?, read_f64(value, offset + 44)?],
+                flags: u32::from_le_bytes(read(value, offset + 60)?),
+            });
+            offset = end;
+        }
+        result.paths.push(Sai2ShapePath {
+            id,
+            origin,
+            flags,
+            points,
+        });
+    }
+    Ok(result)
+}
+
+fn decode_color14(value: &[u8]) -> Result<[u16; 4], ParseError> {
+    if value.len() != 8 {
+        return Err(layer_error("unsupported 14-bit color length"));
+    }
+    Ok([
+        u16::from_le_bytes(read(value, 0)?),
+        u16::from_le_bytes(read(value, 2)?),
+        u16::from_le_bytes(read(value, 4)?),
+        u16::from_le_bytes(read(value, 6)?),
+    ])
+}
+
+fn read_f64(input: &[u8], offset: usize) -> Result<f64, ParseError> {
+    let value = f64::from_le_bytes(read(input, offset)?);
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(layer_error("non-finite vector coordinate"))
+    }
+}
+
+fn read_f32(input: &[u8], offset: usize) -> Result<f32, ParseError> {
+    let value = f32::from_le_bytes(read(input, offset)?);
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(layer_error("non-finite vector value"))
+    }
 }
 
 fn decode_name(value: &[u8]) -> Result<String, ParseError> {
@@ -224,8 +797,64 @@ fn decode_raster_layer(
     height: u32,
 ) -> Result<RgbaImage, ParseError> {
     let mut rgba = vec![0; image_len(width, height)?];
+    decode_block_grid::<CHANNELS, _>(
+        body,
+        block_origin_x,
+        block_origin_y,
+        block_width,
+        block_height,
+        width,
+        height,
+        |values, block_x, block_y| blit_block(values, block_x, block_y, width, height, &mut rgba),
+    )?;
+    Ok(RgbaImage::from_pixels(width, height, rgba))
+}
+
+fn decode_mask_image(
+    body: &[u8],
+    block_origin_x: i32,
+    block_origin_y: i32,
+    block_width: u32,
+    block_height: u32,
+    width: u32,
+    height: u32,
+) -> Result<GrayImage, ParseError> {
+    let mut pixels = vec![0; gray_image_len(width, height)?];
+    decode_block_grid::<1, _>(
+        body,
+        block_origin_x,
+        block_origin_y,
+        block_width,
+        block_height,
+        width,
+        height,
+        |values, block_x, block_y| {
+            blit_mask_block(values, block_x, block_y, width, height, &mut pixels)
+        },
+    )?;
+    Ok(GrayImage {
+        width,
+        height,
+        pixels,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_block_grid<const N: usize, F>(
+    body: &[u8],
+    block_origin_x: i32,
+    block_origin_y: i32,
+    block_width: u32,
+    block_height: u32,
+    width: u32,
+    height: u32,
+    mut blit: F,
+) -> Result<(), ParseError>
+where
+    F: FnMut(&[[i32; N]; BLOCK_PIXELS], i64, i64) -> Result<(), ParseError>,
+{
     if block_width == 0 && block_height == 0 {
-        return Ok(RgbaImage::from_pixels(width, height, rgba));
+        return Ok(());
     }
     if block_width == 0 || block_height == 0 {
         return Err(layer_error("inconsistent lpix block dimensions"));
@@ -258,7 +887,7 @@ fn decode_raster_layer(
         let stream = body
             .get(offset..end)
             .ok_or_else(|| layer_error("truncated lpix row"))?;
-        decode_block_row(
+        decode_block_row::<N, _>(
             stream,
             block_origin_x,
             block_origin_y,
@@ -266,7 +895,7 @@ fn decode_raster_layer(
             row,
             width,
             height,
-            &mut rgba,
+            &mut blit,
         )?;
         offset = end;
     }
@@ -276,12 +905,12 @@ fn decode_raster_layer(
     if padding.len() > 3 || padding.iter().any(|byte| *byte != 0) {
         return Err(layer_error("invalid lpix padding"));
     }
-    Ok(RgbaImage::from_pixels(width, height, rgba))
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_lines)]
-fn decode_block_row(
+fn decode_block_row<const N: usize, F>(
     stream: &[u8],
     block_origin_x: i32,
     block_origin_y: i32,
@@ -289,8 +918,11 @@ fn decode_block_row(
     row: usize,
     canvas_width: u32,
     canvas_height: u32,
-    rgba: &mut [u8],
-) -> Result<(), ParseError> {
+    blit: &mut F,
+) -> Result<(), ParseError>
+where
+    F: FnMut(&[[i32; N]; BLOCK_PIXELS], i64, i64) -> Result<(), ParseError>,
+{
     let blocks = usize::try_from(block_width).map_err(|_| layer_error("lpix row is too wide"))?;
     let row_i32 = i32::try_from(row).map_err(|_| layer_error("lpix row index is too large"))?;
     let block_y = block_origin_y
@@ -331,7 +963,7 @@ fn decode_block_row(
                 if block_x >= blocks {
                     return Err(layer_error("lpix solid block exceeds row width"));
                 }
-                let mut color = [0_i32; CHANNELS];
+                let mut color = [0_i32; N];
                 for channel in &mut color {
                     *channel = i32::from(u16::from_le_bytes(read(stream, offset)?)) & 0x3fff;
                     offset += 2;
@@ -342,14 +974,7 @@ fn decode_block_row(
                     canvas_width,
                     canvas_height,
                 ) {
-                    blit_block(
-                        &[color; BLOCK_PIXELS],
-                        absolute_x,
-                        i64::from(block_y),
-                        canvas_width,
-                        canvas_height,
-                        rgba,
-                    )?;
+                    blit(&[color; BLOCK_PIXELS], absolute_x, i64::from(block_y))?;
                 }
                 block_x += 1;
             }
@@ -371,15 +996,8 @@ fn decode_block_row(
                     canvas_width,
                     canvas_height,
                 ) {
-                    let values = decode_dpcm_block(compressed)?;
-                    blit_block(
-                        &values,
-                        absolute_x,
-                        i64::from(block_y),
-                        canvas_width,
-                        canvas_height,
-                        rgba,
-                    )?;
+                    let values = decode_dpcm_block::<N>(compressed)?;
+                    blit(&values, absolute_x, i64::from(block_y))?;
                 }
                 offset = end;
                 block_x += 1;
@@ -443,27 +1061,60 @@ fn blit_block(
     Ok(())
 }
 
-fn decode_dpcm_block(compressed: &[u8]) -> Result<[[i32; CHANNELS]; BLOCK_PIXELS], ParseError> {
-    let mut deltas = [0_i16; BLOCK_PIXELS * CHANNELS];
-    let consumed = crate::image::decode_delta_row(compressed, &mut deltas, BLOCK_PIXELS, CHANNELS)?;
+fn blit_mask_block(
+    values: &[[i32; 1]; BLOCK_PIXELS],
+    block_x: i64,
+    block_y: i64,
+    canvas_width: u32,
+    canvas_height: u32,
+    pixels: &mut [u8],
+) -> Result<(), ParseError> {
+    let width = usize::try_from(canvas_width).map_err(|_| layer_error("invalid mask width"))?;
+    let left = block_x * BLOCK_SIZE_I64;
+    let top = block_y * BLOCK_SIZE_I64;
+    for y in 0..BLOCK_SIZE {
+        let canvas_y = top + i64::try_from(y).map_err(|_| layer_error("mask pixel Y overflow"))?;
+        if canvas_y < 0 || canvas_y >= i64::from(canvas_height) {
+            continue;
+        }
+        for x in 0..BLOCK_SIZE {
+            let canvas_x =
+                left + i64::try_from(x).map_err(|_| layer_error("mask pixel X overflow"))?;
+            if canvas_x < 0 || canvas_x >= i64::from(canvas_width) {
+                continue;
+            }
+            let destination =
+                usize::try_from(canvas_y).map_err(|_| layer_error("invalid mask pixel Y"))? * width
+                    + usize::try_from(canvas_x).map_err(|_| layer_error("invalid mask pixel X"))?;
+            pixels[destination] = scale_14_to_8(values[y * BLOCK_SIZE + x][0]);
+        }
+    }
+    Ok(())
+}
+
+fn decode_dpcm_block<const N: usize>(
+    compressed: &[u8],
+) -> Result<[[i32; N]; BLOCK_PIXELS], ParseError> {
+    let mut deltas = vec![0_i16; BLOCK_PIXELS * N];
+    let consumed = crate::image::decode_delta_row(compressed, &mut deltas, BLOCK_PIXELS, N, N)?;
     if consumed != compressed.len() {
         return Err(layer_error("lpix block has unused compressed bytes"));
     }
-    let mut values = [[0_i32; CHANNELS]; BLOCK_PIXELS];
+    let mut values = [[0_i32; N]; BLOCK_PIXELS];
     for y in 0..BLOCK_SIZE {
-        let mut left = [0_i32; CHANNELS];
-        let mut upper_left = [0_i32; CHANNELS];
+        let mut left = [0_i32; N];
+        let mut upper_left = [0_i32; N];
         for x in 0..BLOCK_SIZE {
             let index = y * BLOCK_SIZE + x;
-            for channel in 0..CHANNELS {
+            for channel in 0..N {
                 let above = if y == 0 {
                     0
                 } else {
                     values[index - BLOCK_SIZE][channel]
                 };
                 let predicted = (left[channel] + above - upper_left[channel]).clamp(0, CHANNEL_MAX);
-                let value = (predicted + i32::from(deltas[index * CHANNELS + channel]))
-                    .clamp(0, CHANNEL_MAX);
+                let value =
+                    (predicted + i32::from(deltas[index * N + channel])).clamp(0, CHANNEL_MAX);
                 values[index][channel] = value;
                 left[channel] = value;
                 upper_left[channel] = above;
@@ -490,6 +1141,11 @@ fn scale_14_to_8(value: i32) -> u8 {
 fn image_len(width: u32, height: u32) -> Result<usize, ParseError> {
     usize::try_from(u64::from(width) * u64::from(height) * 4)
         .map_err(|_| layer_error("layer image is too large"))
+}
+
+fn gray_image_len(width: u32, height: u32) -> Result<usize, ParseError> {
+    usize::try_from(u64::from(width) * u64::from(height))
+        .map_err(|_| layer_error("mask image is too large"))
 }
 
 fn chunk_body<'a>(input: &'a [u8], chunk: &crate::Chunk) -> Result<&'a [u8], ParseError> {
@@ -611,6 +1267,103 @@ mod tests {
             "too many differing channels: {different}"
         );
         assert!(maximum_delta <= 1, "maximum channel delta: {maximum_delta}");
+    }
+
+    #[test]
+    fn decodes_owned_folder_and_mask_fixture_when_available() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../fixtures/private/izunaface-multipleLayersInFolder-maskWithBitmapLayer-singleLineVector-shapeLayer.sai2",
+        );
+        let Ok(bytes) = std::fs::read(path) else {
+            return;
+        };
+
+        let layers = decode_layers(&bytes, DecodeLimits::default()).unwrap();
+
+        assert_eq!(layers.len(), 6);
+        assert_eq!(
+            layers
+                .iter()
+                .map(|layer| layer.layer_type().as_bytes())
+                .collect::<Vec<_>>(),
+            [*b"fold", *b"liwk", *b"norm", *b"norm", *b"shap", *b"norm"]
+        );
+        assert_eq!(
+            layers
+                .iter()
+                .map(|layer| layer.flags() & 0xffff)
+                .collect::<Vec<_>>(),
+            [0, 1, 1, 1, 1, 0]
+        );
+        assert!(layers[0].image().is_none());
+        assert!(layers[1].image().is_none());
+        assert!(layers[2].image().is_some());
+        assert!(layers[3].image().is_some());
+        assert!(layers[4].image().is_none());
+        assert!(layers[5].image().is_some());
+
+        let mask = layers[2].mask().expect("bitmap layer should have a mask");
+        assert_eq!(mask.id(), 12);
+        assert_eq!(mask.block_origin(), (0, 0));
+        assert_eq!(mask.block_dimensions(), (10, 10));
+        assert_eq!(mask.flags(), [1, 1, 1, 0]);
+        assert_eq!(mask.source_chunks().len(), 1);
+        assert_eq!(mask.source_chunks()[0].kind().as_bytes(), *b"mpix");
+        let image = mask.image().expect("mask pixels should decode");
+        assert_eq!((image.width(), image.height()), (300, 300));
+        assert_eq!(image.pixels().iter().copied().min(), Some(0));
+        assert_eq!(image.pixels().iter().copied().max(), Some(250));
+        assert_eq!(layers[2].source_chunks().len(), 3);
+
+        let linework = layers[1]
+            .linework()
+            .expect("linework structure should decode");
+        assert_eq!(
+            linework.color_bgra14(),
+            Some([0x2f6f, 0x23e3, 0x12d2, 0x4000])
+        );
+        assert_eq!(linework.brush_size(), Some(50.0));
+        assert_eq!(linework.strokes().len(), 1);
+        let stroke = &linework.strokes()[0];
+        assert_eq!(stroke.id(), 1);
+        assert_eq!(stroke.kind(), 2);
+        assert_eq!(stroke.points().len(), 13);
+        assert_eq!(
+            stroke
+                .points()
+                .iter()
+                .map(Sai2StrokePoint::id)
+                .collect::<Vec<_>>(),
+            [1, 2, 13, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        );
+        assert_eq!(stroke.points()[0].pressure().to_bits(), 1.0_f32.to_bits());
+        assert_eq!(stroke.points()[4].pressure().to_bits(), 0.0_f32.to_bits());
+        assert!((stroke.points()[7].pressure() - 0.497_263_13).abs() < 0.000_001);
+        assert!((stroke.points()[10].pressure() - 0.249_684_21).abs() < 0.000_001);
+
+        let shape = layers[4].shape().expect("shape structure should decode");
+        assert_eq!(shape.fill_bgra14(), Some([0x2f6f, 0x23e3, 0x12d2, 0x4000]));
+        assert_eq!(shape.paths().len(), 1);
+        let path = &shape.paths()[0];
+        assert_eq!(
+            path.origin().map(f64::to_bits),
+            [152.0_f64.to_bits(), 154.0_f64.to_bits()]
+        );
+        assert_eq!(path.points().len(), 4);
+        let absolute = path
+            .points()
+            .iter()
+            .map(|point| {
+                [
+                    path.origin()[0] + point.position()[0],
+                    path.origin()[1] + point.position()[1],
+                ]
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            absolute,
+            [[18.0, 20.0], [286.0, 20.0], [286.0, 288.0], [18.0, 288.0]]
+        );
     }
 
     fn synthetic_layer_document() -> Vec<u8> {

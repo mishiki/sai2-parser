@@ -56,6 +56,15 @@ fn run() -> Result<(), String> {
         input_path.display(),
         output_path.display()
     );
+    let placeholder_count = layers
+        .iter()
+        .filter(|layer| !layer.is_folder() && layer.image().is_none())
+        .count();
+    if placeholder_count != 0 {
+        println!(
+            "Preserved {placeholder_count} structured non-raster layer(s) as transparent PSD placeholders; the saved composite preview remains exact"
+        );
+    }
     Ok(())
 }
 
@@ -67,8 +76,9 @@ fn parse_paths(
     };
     if first == "-h" || first == "--help" {
         println!("Usage: sai2topsd <input.sai2> <output.psd>");
-        println!("Convert decoded SAI2 raster layers to a layered PSD file.");
+        println!("Convert decoded SAI2 layers to a layered PSD file.");
         println!("Original per-layer chunks are preserved in private s2ly metadata.");
+        println!("Unsupported layer rendering is represented by transparent placeholders.");
         return Ok(None);
     }
     let Some(second) = arguments.next() else {

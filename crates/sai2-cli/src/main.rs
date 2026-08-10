@@ -1,6 +1,6 @@
 use std::{env, fs, path::PathBuf, process::ExitCode};
 
-use sai2_core::Sai2Document;
+use sai2_core::{DecodeLimits, Sai2Document, decode_layers};
 
 fn main() -> ExitCode {
     match run() {
@@ -38,6 +38,61 @@ fn run() -> Result<(), String> {
         );
     }
 
+    let layers =
+        decode_layers(&bytes, DecodeLimits::default()).map_err(|error| error.to_string())?;
+    if !layers.is_empty() {
+        println!("Layers:");
+        for layer in &layers {
+            let indent = "  ".repeat(usize::from(layer.nesting_level()) + 1);
+            println!(
+                "{indent}{} id={} type={} blend={} opacity={} visible={}",
+                layer.name(),
+                layer.id(),
+                layer.layer_type(),
+                layer.blend_mode(),
+                layer.opacity(),
+                layer.visible()
+            );
+            if let Some(mask) = layer.mask() {
+                let (width, height) = mask.block_dimensions();
+                println!(
+                    "{indent}  mask id={} blocks={}x{} decoded={}",
+                    mask.id(),
+                    width,
+                    height,
+                    mask.image().is_some()
+                );
+            }
+            if let Some(linework) = layer.linework() {
+                let point_count = linework
+                    .strokes()
+                    .iter()
+                    .map(|stroke| stroke.points().len())
+                    .sum::<usize>();
+                println!(
+                    "{indent}  linework strokes={} points={} brush_size={:?} color_bgra14={:?}",
+                    linework.strokes().len(),
+                    point_count,
+                    linework.brush_size(),
+                    linework.color_bgra14()
+                );
+            }
+            if let Some(shape) = layer.shape() {
+                let point_count = shape
+                    .paths()
+                    .iter()
+                    .map(|path| path.points().len())
+                    .sum::<usize>();
+                println!(
+                    "{indent}  shape paths={} points={} fill_bgra14={:?}",
+                    shape.paths().len(),
+                    point_count,
+                    shape.fill_bgra14()
+                );
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -50,7 +105,7 @@ fn parse_path(
 
     if first == "-h" || first == "--help" {
         println!("Usage: sai2-info <file.sai2>");
-        println!("Parse and display the SAI2 document header and chunk table.");
+        println!("Parse and display SAI2 metadata, chunks, and decoded layer structure.");
         return Ok(None);
     }
 

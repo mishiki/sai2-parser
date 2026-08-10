@@ -6,6 +6,13 @@ const CHANNEL_IDS: [i16; 4] = [0, 1, 2, -1];
 const SAI2_LAYER_DATA_KEY: &[u8; 4] = b"s2ly";
 const SAI2_LAYER_DATA_MAGIC: &[u8; 8] = b"SAI2LYR\0";
 const BACKGROUND_NAME: &str = "SAI2 Canvas Background";
+const DIVIDER_NAME: &str = "</Layer group>";
+
+#[derive(Clone, Copy)]
+enum PsdRecord<'a> {
+    Source(&'a Sai2Layer),
+    Divider,
+}
 
 #[allow(clippy::too_many_lines)]
 pub fn write_layered(
@@ -26,16 +33,27 @@ pub fn write_layered(
         return Err("composite dimensions do not match the SAI2 canvas".to_owned());
     }
     for layer in layers {
-        let Some(image) = layer.image() else {
+        if layer.layer_type().as_bytes() == *b"norm" && layer.image().is_none() {
             return Err(format!(
-                "layer {} ({}) uses a pixel layout that sai2topsd does not decode yet",
+                "raster layer {} ({}) has no decoded pixels",
                 layer.id(),
                 layer.name()
             ));
-        };
-        if image.width() != width || image.height() != height {
+        }
+        if let Some(image) = layer.image()
+            && (image.width() != width || image.height() != height)
+        {
             return Err(format!(
                 "layer {} dimensions do not match the canvas",
+                layer.id()
+            ));
+        }
+        if let Some(mask) = layer.mask()
+            && let Some(image) = mask.image()
+            && (image.width() != width || image.height() != height)
+        {
+            return Err(format!(
+                "layer {} mask dimensions do not match the canvas",
                 layer.id()
             ));
         }
@@ -47,27 +65,38 @@ pub fn write_layered(
             .checked_add(2)
             .ok_or("PSD channel length overflow")?,
     )?;
-    let extra_lens = layers
+    let records = build_psd_records(layers)?;
+    let extra_lens = records
         .iter()
-        .map(layer_extra_len)
+        .map(|record| record_extra_len(*record))
         .collect::<Result<Vec<_>, _>>()?;
-    let mut records_len = extra_lens.iter().try_fold(0_usize, |sum, extra_len| {
-        sum.checked_add(layer_record_len(*extra_len))
-            .ok_or_else(|| "PSD layer records are too large".to_owned())
-    })?;
+    let mut records_len =
+        records
+            .iter()
+            .zip(&extra_lens)
+            .try_fold(0_usize, |sum, (record, extra_len)| {
+                sum.checked_add(layer_record_len(*extra_len, record_channel_count(*record)))
+                    .ok_or_else(|| "PSD layer records are too large".to_owned())
+            })?;
     let background_extra_len = basic_layer_extra_len(BACKGROUND_NAME, BACKGROUND_NAME)?;
     if white_background {
         records_len = records_len
-            .checked_add(layer_record_len(background_extra_len))
+            .checked_add(layer_record_len(background_extra_len, 4))
             .ok_or_else(|| "PSD layer records are too large".to_owned())?;
     }
-    let output_layer_count = layers
+    let output_layer_count = records
         .len()
         .checked_add(usize::from(white_background))
         .ok_or_else(|| "PSD has too many layers".to_owned())?;
-    let image_data_len = output_layer_count
-        .checked_mul(4)
-        .and_then(|count| count.checked_mul(pixel_count + 2))
+    let source_channel_count = records.iter().try_fold(0_usize, |sum, record| {
+        sum.checked_add(record_channel_count(*record))
+            .ok_or_else(|| "PSD layer channel count is too large".to_owned())
+    })?;
+    let image_channel_count = source_channel_count
+        .checked_add(if white_background { 4 } else { 0 })
+        .ok_or_else(|| "PSD layer channel count is too large".to_owned())?;
+    let image_data_len = image_channel_count
+        .checked_mul(pixel_count + 2)
         .ok_or_else(|| "PSD layer image data is too large".to_owned())?;
     let mut layer_info_len = 2_usize
         .checked_add(records_len)
@@ -108,9 +137,89 @@ pub fn write_layered(
         write_pascal_name(output, BACKGROUND_NAME)?;
         write_unicode_name(output, BACKGROUND_NAME)?;
     }
-    // SAI2 lists layers from top to bottom, while PSD layer records are
-    // composited from the first (bottom) record to the last (top) record.
-    for (layer, extra_len) in layers.iter().zip(&extra_lens).rev() {
+    for (record, extra_len) in records.iter().zip(&extra_lens) {
+        write_record(
+            output,
+            *record,
+            *extra_len,
+            width,
+            height,
+            channel_data_len,
+            source,
+        )?;
+    }
+
+    if white_background {
+        for _ in 0..4 {
+            write_u16(output, 0)?; // raw channel data
+            write_solid_plane(output, 255, pixel_count)?;
+        }
+    }
+    for record in &records {
+        write_record_pixels(output, *record, pixel_count)?;
+    }
+    if (2 + records_len + image_data_len) % 2 != 0 {
+        output.write_all(&[0]).map_err(io_error)?;
+    }
+    write_u32(output, 0)?; // global layer mask
+
+    write_u16(output, 0)?; // raw composite data
+    for channel in 0..4 {
+        write_plane(output, composite.pixels(), channel)?;
+    }
+    Ok(())
+}
+
+fn build_psd_records(layers: &[Sai2Layer]) -> Result<Vec<PsdRecord<'_>>, String> {
+    let mut records = Vec::with_capacity(layers.len() * 2);
+    let mut depth = 0_u16;
+    for layer in layers.iter().rev() {
+        let layer_depth = layer.nesting_level();
+        if layer_depth > depth {
+            if layer_depth != depth + 1 {
+                return Err(format!(
+                    "layer {} jumps from folder depth {depth} to {layer_depth}",
+                    layer.id()
+                ));
+            }
+            records.push(PsdRecord::Divider);
+            depth = layer_depth;
+        } else if layer_depth < depth {
+            if layer_depth + 1 != depth || !layer.is_folder() {
+                return Err(format!(
+                    "layer {} does not close folder depth {depth}",
+                    layer.id()
+                ));
+            }
+            depth = layer_depth;
+        } else if layer.is_folder() {
+            // An empty folder still needs a bounding section divider.
+            records.push(PsdRecord::Divider);
+        }
+        records.push(PsdRecord::Source(layer));
+    }
+    if depth != 0 {
+        return Err(format!("unclosed SAI2 folder depth {depth}"));
+    }
+    Ok(records)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_record(
+    output: &mut impl Write,
+    record: PsdRecord<'_>,
+    extra_len: usize,
+    width: u32,
+    height: u32,
+    channel_data_len: u32,
+    source: &[u8],
+) -> Result<(), String> {
+    let channels = record_channel_count(record);
+    if channels == 0 {
+        for _ in 0..4 {
+            write_i32(output, 0)?;
+        }
+    } else {
         write_i32(output, 0)?;
         write_i32(output, 0)?;
         write_i32(
@@ -121,49 +230,87 @@ pub fn write_layered(
             output,
             i32::try_from(width).map_err(|_| "PSD width is too large")?,
         )?;
-        write_u16(output, 4)?;
-        for id in CHANNEL_IDS {
-            write_i16(output, id)?;
-            write_u32(output, channel_data_len)?;
-        }
-        output.write_all(b"8BIM").map_err(io_error)?;
-        output.write_all(&psd_blend_key(layer)).map_err(io_error)?;
-        let opacity = u8::try_from((u16::from(layer.opacity()) * 255 + 50) / 100)
-            .map_err(|_| "PSD opacity overflow")?;
-        let clipping = u8::from(layer.flags() & 0x0100_0000 != 0);
-        let flags = if layer.visible() { 0 } else { 2 };
-        output
-            .write_all(&[opacity, clipping, flags, 0])
-            .map_err(io_error)?;
-        write_u32(output, checked_u32(*extra_len)?)?;
-        write_u32(output, 0)?; // layer mask
-        write_u32(output, 0)?; // blending ranges
-        write_pascal_name(output, &format!("Layer {}", layer.id()))?;
-        write_unicode_name(output, layer.name())?;
-        write_sai2_layer_data(output, layer, source)?;
+    }
+    write_u16(
+        output,
+        u16::try_from(channels).map_err(|_| "too many PSD layer channels")?,
+    )?;
+    for id in CHANNEL_IDS.into_iter().take(channels.min(4)) {
+        write_i16(output, id)?;
+        write_u32(output, channel_data_len)?;
+    }
+    if channels == 5 {
+        write_i16(output, -2)?;
+        write_u32(output, channel_data_len)?;
     }
 
-    if white_background {
-        for _ in 0..4 {
-            write_u16(output, 0)?; // raw channel data
-            write_solid_plane(output, 255, pixel_count)?;
+    output.write_all(b"8BIM").map_err(io_error)?;
+    match record {
+        PsdRecord::Source(layer) => {
+            output.write_all(&psd_blend_key(layer)).map_err(io_error)?;
+            let opacity = u8::try_from((u16::from(layer.opacity()) * 255 + 50) / 100)
+                .map_err(|_| "PSD opacity overflow")?;
+            let clipping = u8::from(layer.flags() & 0x0100_0000 != 0);
+            let flags = if layer.visible() { 0 } else { 2 };
+            output
+                .write_all(&[opacity, clipping, flags, 0])
+                .map_err(io_error)?;
+            write_u32(output, checked_u32(extra_len)?)?;
+            write_layer_mask_data(output, layer, width, height)?;
+            write_u32(output, 0)?; // blending ranges
+            write_pascal_name(output, &format!("Layer {}", layer.id()))?;
+            write_unicode_name(output, layer.name())?;
+            write_sai2_layer_data(output, layer, source)?;
+            if layer.is_folder() {
+                write_section_divider(output, 1, Some(psd_blend_key(layer)))?;
+            }
+        }
+        PsdRecord::Divider => {
+            output.write_all(b"norm").map_err(io_error)?;
+            output.write_all(&[255, 0, 2, 0]).map_err(io_error)?;
+            write_u32(output, checked_u32(extra_len)?)?;
+            write_u32(output, 0)?; // layer mask
+            write_u32(output, 0)?; // blending ranges
+            write_pascal_name(output, DIVIDER_NAME)?;
+            write_unicode_name(output, DIVIDER_NAME)?;
+            write_section_divider(output, 3, None)?;
         }
     }
-    for layer in layers.iter().rev() {
-        let pixels = layer.image().expect("layers were validated").pixels();
+    Ok(())
+}
+
+fn write_record_pixels(
+    output: &mut impl Write,
+    record: PsdRecord<'_>,
+    pixel_count: usize,
+) -> Result<(), String> {
+    let PsdRecord::Source(layer) = record else {
+        return Ok(());
+    };
+    if layer.is_folder() {
+        return Ok(());
+    }
+    if let Some(image) = layer.image() {
         for channel in 0..4 {
-            write_u16(output, 0)?; // raw channel data
-            write_plane(output, pixels, channel)?;
+            write_u16(output, 0)?;
+            write_plane(output, image.pixels(), channel)?;
+        }
+    } else {
+        for _ in 0..4 {
+            write_u16(output, 0)?;
+            write_solid_plane(output, 0, pixel_count)?;
         }
     }
-    if (2 + records_len + image_data_len) % 2 != 0 {
-        output.write_all(&[0]).map_err(io_error)?;
-    }
-    write_u32(output, 0)?; // global layer mask
-
-    write_u16(output, 0)?; // raw composite data
-    for channel in 0..4 {
-        write_plane(output, composite.pixels(), channel)?;
+    if let Some(mask) = layer.mask() {
+        let image = mask.image().ok_or_else(|| {
+            format!(
+                "layer {} ({}) has an undecoded mask",
+                layer.id(),
+                layer.name()
+            )
+        })?;
+        write_u16(output, 0)?;
+        output.write_all(image.pixels()).map_err(io_error)?;
     }
     Ok(())
 }
@@ -192,15 +339,89 @@ fn write_common_layer_record(
     Ok(())
 }
 
-fn layer_record_len(extra_len: usize) -> usize {
-    16 + 2 + 4 * 6 + 12 + 4 + extra_len
+fn layer_record_len(extra_len: usize, channels: usize) -> usize {
+    16 + 2 + channels * 6 + 12 + 4 + extra_len
+}
+
+fn record_channel_count(record: PsdRecord<'_>) -> usize {
+    match record {
+        PsdRecord::Divider => 0,
+        PsdRecord::Source(layer) if layer.is_folder() => 0,
+        PsdRecord::Source(layer) => 4 + usize::from(layer.mask().is_some()),
+    }
+}
+
+fn record_extra_len(record: PsdRecord<'_>) -> Result<usize, String> {
+    match record {
+        PsdRecord::Divider => basic_layer_extra_len(DIVIDER_NAME, DIVIDER_NAME)?
+            .checked_add(section_divider_block_len(false))
+            .ok_or_else(|| "PSD divider extra data is too large".to_owned()),
+        PsdRecord::Source(layer) => layer_extra_len(layer),
+    }
 }
 
 fn layer_extra_len(layer: &Sai2Layer) -> Result<usize, String> {
     let fallback = format!("Layer {}", layer.id());
-    let base = basic_layer_extra_len(&fallback, layer.name())?;
-    base.checked_add(sai2_layer_block_len(layer)?)
-        .ok_or_else(|| "PSD layer extra data is too large".to_owned())
+    let mut length = basic_layer_extra_len(&fallback, layer.name())?;
+    if layer.mask().is_some() {
+        length = length
+            .checked_add(20)
+            .ok_or_else(|| "PSD layer mask data is too large".to_owned())?;
+    }
+    length = length
+        .checked_add(sai2_layer_block_len(layer)?)
+        .ok_or_else(|| "PSD layer extra data is too large".to_owned())?;
+    if layer.is_folder() {
+        length = length
+            .checked_add(section_divider_block_len(true))
+            .ok_or_else(|| "PSD folder extra data is too large".to_owned())?;
+    }
+    Ok(length)
+}
+
+const fn section_divider_block_len(has_blend_mode: bool) -> usize {
+    if has_blend_mode { 24 } else { 16 }
+}
+
+fn write_layer_mask_data(
+    output: &mut impl Write,
+    layer: &Sai2Layer,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    if layer.mask().is_none() {
+        return write_u32(output, 0);
+    }
+    write_u32(output, 20)?;
+    write_i32(output, 0)?;
+    write_i32(output, 0)?;
+    write_i32(
+        output,
+        i32::try_from(height).map_err(|_| "PSD mask height is too large")?,
+    )?;
+    write_i32(
+        output,
+        i32::try_from(width).map_err(|_| "PSD mask width is too large")?,
+    )?;
+    output.write_all(&[0, 0]).map_err(io_error)?;
+    write_u16(output, 0)?;
+    Ok(())
+}
+
+fn write_section_divider(
+    output: &mut impl Write,
+    divider_type: u32,
+    blend_mode: Option<[u8; 4]>,
+) -> Result<(), String> {
+    let data_len = if blend_mode.is_some() { 12 } else { 4 };
+    output.write_all(b"8BIMlsct").map_err(io_error)?;
+    write_u32(output, data_len)?;
+    write_u32(output, divider_type)?;
+    if let Some(blend_mode) = blend_mode {
+        output.write_all(b"8BIM").map_err(io_error)?;
+        output.write_all(&blend_mode).map_err(io_error)?;
+    }
+    Ok(())
 }
 
 fn sai2_layer_payload_len(layer: &Sai2Layer) -> Result<usize, String> {
@@ -319,7 +540,10 @@ fn write_sai2_layer_data(
 
 fn psd_blend_key(layer: &Sai2Layer) -> [u8; 4] {
     match layer.blend_mode().as_bytes() {
+        value if value == *b"pass" => *b"pass",
         value if value == *b"mult" => *b"mul ",
+        value if value == *b"burn" => *b"idiv",
+        value if value == *b"litn" => *b"dark",
         value if value == *b"scrn" => *b"scrn",
         value if value == *b"over" => *b"over",
         value if value == *b"dark" => *b"dark",
