@@ -459,6 +459,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn decodes_four_tiles_with_partial_right_and_bottom_edges() {
+        let document = synthetic_tiled_blank(257, 257);
+
+        let image = decode_integrated_image(&document, DecodeLimits::default())
+            .expect("four-tile image should decode");
+
+        assert_eq!(image.width(), 257);
+        assert_eq!(image.height(), 257);
+        assert_eq!(image.pixels().len(), 257 * 257 * OUTPUT_CHANNELS);
+        assert!(image.pixels().iter().all(|byte| *byte == 0));
+    }
+
     fn synthetic_document(width: u32, height: u32, flags: u32, row: &[u8]) -> Vec<u8> {
         let mut body = Vec::new();
         body.extend_from_slice(b"dpcm");
@@ -471,6 +484,54 @@ mod tests {
             body.push(0);
         }
 
+        wrap_integrated_body(width, height, flags, &body)
+    }
+
+    fn synthetic_tiled_blank(width: u32, height: u32) -> Vec<u8> {
+        let width_usize = usize::try_from(width).expect("test width should fit");
+        let height_usize = usize::try_from(height).expect("test height should fit");
+        let tiles_x = width_usize.div_ceil(TILE_SIZE);
+        let tiles_y = height_usize.div_ceil(TILE_SIZE);
+        let mut tiles = Vec::new();
+
+        for tile_y in 0..tiles_y {
+            let tile_height = (height_usize - tile_y * TILE_SIZE).min(TILE_SIZE);
+            for tile_x in 0..tiles_x {
+                let tile_width = (width_usize - tile_x * TILE_SIZE).min(TILE_SIZE);
+                let mut tile = Vec::new();
+                let marker =
+                    (u16::try_from(tile_x).expect("test tile index should fit") << 8) | 0x00ff;
+                tile.extend_from_slice(&marker.to_le_bytes());
+                let row = encode_zero_row(tile_width, 4);
+                for _ in 0..tile_height {
+                    tile.extend_from_slice(&row);
+                }
+                tiles.push(tile);
+            }
+        }
+
+        let mut body = Vec::new();
+        body.extend_from_slice(b"dpcm");
+        for tile in &tiles {
+            let size = u32::try_from(tile.len()).expect("test tile should fit");
+            body.extend_from_slice(&size.to_le_bytes());
+        }
+        for tile_y in 0..tiles_y {
+            for tile_x in 0..tiles_x {
+                body.extend_from_slice(&tiles[tile_y * tiles_x + tile_x]);
+            }
+            let marker =
+                (u16::try_from(tiles_x).expect("test tile count should fit") << 8) | 0x00ff;
+            body.extend_from_slice(&marker.to_le_bytes());
+        }
+        while body.len() % 4 != 0 {
+            body.push(0);
+        }
+
+        wrap_integrated_body(width, height, 0x2000, &body)
+    }
+
+    fn wrap_integrated_body(width: u32, height: u32, flags: u32, body: &[u8]) -> Vec<u8> {
         let mut document = vec![0_u8; 80];
         document[0..16].copy_from_slice(&SAI2_MAGIC);
         document[16..20].copy_from_slice(&flags.to_le_bytes());
@@ -480,8 +541,18 @@ mod tests {
         document[60..64].copy_from_slice(b"norm");
         document[64..68].copy_from_slice(b"intg");
         document[72..80].copy_from_slice(&80_u64.to_le_bytes());
-        document.extend_from_slice(&body);
+        document.extend_from_slice(body);
         document
+    }
+
+    fn encode_zero_row(pixel_count: usize, channels: usize) -> Vec<u8> {
+        let mut writer = BitWriter::default();
+        for _ in 0..channels {
+            for _ in 0..pixel_count {
+                writer.write_opcode(0);
+            }
+        }
+        writer.finish()
     }
 
     fn encode_row<const CHANNELS: usize, const PIXELS: usize>(

@@ -93,6 +93,10 @@ Decoded results:
 - both nonblank fixtures produce 1,024 pixels with alpha 255;
 - the red circle and overlapping red/green circles visually match the supplied
   SAI2 thumbnails, including placement and overlap order.
+- a privately held 300 x 300 artwork fixture produces four tiles, including
+  44-pixel right and bottom edges; its decoded RGBA output differs from the
+  supplied reference PNG in zero of 90,000 pixels, including across both
+  256-pixel tile boundaries.
 
 ## Assumed by the current implementation
 
@@ -126,8 +130,6 @@ Decoded results:
   equal chunk offsets, nonzero high offset bits, or chunks not ordered by
   physical offset.
 - Semantics of chunk bodies beyond the limited prefixes listed above.
-- Real-file confirmation for multiple tile rows/columns and partial 256-pixel
-  edge tiles.
 - Meanings of all canvas-background flag values beyond the two observed modes.
 - Whether other format tags change the DPCM predictor, channel order, bitstream,
   marker, or padding rules.

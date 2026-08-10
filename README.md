@@ -33,9 +33,9 @@ far:
 - writes standards-compliant RGBA PNG files with the `sai2-extract` CLI.
 
 The decoder has been verified against three purpose-built 32 x 32, single-tile
-fixtures. Multi-tile canvases are implemented from the documented framing but
-still need independent real-file fixtures. Individual layer decoding is not yet
-implemented.
+fixtures and a 300 x 300 four-tile artwork fixture with partial edge tiles. Its
+output matched the supplied 300 x 300 reference PNG pixel-for-pixel. Individual
+layer decoding is not yet implemented.
 
 ## Usage
 
