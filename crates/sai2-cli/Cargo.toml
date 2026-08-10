@@ -14,5 +14,9 @@ sai2-core = { path = "../sai2-core" }
 name = "sai2-info"
 path = "src/main.rs"
 
+[[bin]]
+name = "sai2-extract"
+path = "src/bin/sai2-extract.rs"
+
 [lints]
 workspace = true

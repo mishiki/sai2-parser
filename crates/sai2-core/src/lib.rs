@@ -8,8 +8,10 @@ mod chunk;
 mod document;
 mod error;
 mod header;
+mod image;
 
 pub use chunk::{CHUNK_ENTRY_LEN, Chunk};
 pub use document::Sai2Document;
 pub use error::ParseError;
 pub use header::{FourCc, HEADER_LEN, SAI2_MAGIC, Sai2Header};
+pub use image::{DecodeLimits, RgbaImage, decode_integrated_image};

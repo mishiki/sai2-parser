@@ -12,17 +12,27 @@ pub enum ParseError {
     /// A chunk points into the header/table or beyond the end of the file.
     InvalidChunkOffset {
         index: usize,
-        offset: u32,
+        offset: u64,
         table_end: usize,
         file_len: usize,
     },
     /// Chunk offsets cannot be used to derive bounded chunk sizes.
     ChunkOffsetsOutOfOrder {
         previous_index: usize,
-        previous_offset: u32,
+        previous_offset: u64,
         index: usize,
-        offset: u32,
+        offset: u64,
     },
+    /// No integrated-image (`intg`) chunk was present.
+    MissingIntegratedImage,
+    /// The integrated image uses an unsupported body encoding.
+    UnsupportedIntegratedImage { found: [u8; 4] },
+    /// Canvas dimensions cannot describe a decodable image.
+    InvalidImageDimensions { width: u32, height: u32 },
+    /// Decoding was stopped before allocating more pixels than allowed.
+    ImageTooLarge { pixels: u64, max_pixels: u64 },
+    /// The integrated-image stream is malformed or truncated.
+    MalformedDpcm { reason: &'static str },
 }
 
 impl fmt::Display for ParseError {
@@ -58,6 +68,27 @@ impl fmt::Display for ParseError {
                 formatter,
                 "SAI2 chunk offsets are out of order: index {previous_index} points to {previous_offset}, but index {index} points to {offset}"
             ),
+            Self::MissingIntegratedImage => {
+                write!(formatter, "SAI2 document has no integrated-image chunk")
+            }
+            Self::UnsupportedIntegratedImage { found } => write!(
+                formatter,
+                "unsupported integrated-image encoding: {:?}",
+                String::from_utf8_lossy(found)
+            ),
+            Self::InvalidImageDimensions { width, height } => {
+                write!(
+                    formatter,
+                    "invalid SAI2 image dimensions: {width} x {height}"
+                )
+            }
+            Self::ImageTooLarge { pixels, max_pixels } => write!(
+                formatter,
+                "SAI2 image has {pixels} pixels, exceeding the configured limit of {max_pixels}"
+            ),
+            Self::MalformedDpcm { reason } => {
+                write!(formatter, "malformed SAI2 DPCM image: {reason}")
+            }
         }
     }
 }

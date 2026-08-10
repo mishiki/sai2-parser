@@ -32,8 +32,13 @@ on reverse engineering the PaintTool SAI executable.
   | ---: | ---: | --- |
   | `0x00` | 4 | four-byte chunk type (`hist`, `intg`, `layr`, `lpix`, ...) |
   | `0x04` | 4 | object ID (`uint32`) |
-  | `0x08` | 4 | chunk offset (`uint32`) |
-  | `0x0c` | 4 | described as zero (`uint32`) |
+  | `0x08` | 8 | absolute chunk offset (`uint64`) |
+
+  Photopea's specification describes the last eight bytes as a 32-bit offset
+  followed by a zero. The public `Wunkolo/libsai` API models the same bytes as
+  one 64-bit absolute offset. The parser uses `uint64` so it does not discard
+  high bits; all current fixtures have zero high bits and are compatible with
+  both descriptions.
 
 ## Observed in owned fixtures
 
@@ -47,7 +52,7 @@ raster layers. The files themselves remain ignored and are not published.
 - Chunk offsets are absolute file offsets and strictly increase in table order.
 - The distance to the next offset, or to end-of-file for the final entry,
   exactly bounds every observed chunk body.
-- The final table field is zero in all 14 observed entries.
+- The upper 32 offset bits are zero in all 14 observed entries.
 - The blank and single-layer files contain `hist`, `intg`, `layr`, and `lpix`.
   The two-layer file adds a second `layr` and `lpix`, for six entries total.
 - Matching `layr` and `lpix` entries share object IDs. The `hist` and `intg`
@@ -56,6 +61,38 @@ raster layers. The files themselves remain ignored and are not published.
   `layr` and its object ID, `intg` and nonempty `lpix` begin with `dpcm`, while
   the blank layer's four-byte `lpix` body is zero. Phase 2 does not interpret
   any of these bodies.
+
+### Integrated image (`intg`)
+
+All three fixtures use this single-tile framing:
+
+1. ASCII `dpcm`;
+2. one little-endian `uint32` byte length per 256 x 256 tile;
+3. for each tile row, each sized tile blob followed by a two-byte row marker;
+4. zero padding to a four-byte chunk boundary.
+
+Each sized tile blob starts with a marker `(tile_x << 8) | 0x00ff`; the marker
+is included in the declared tile length. The marker after a complete tile row
+is `(tiles_x << 8) | 0x00ff` and is not included in any tile length. For the
+one-tile fixtures these are `ff 00` and `ff 01` on disk.
+
+The remaining tile bytes contain one independently byte-aligned stream per
+image row. Bits are read least-significant-bit first. Values are grouped by
+channel, with unary opcodes selecting literal delta widths or zero runs. The
+decoded signed 16-bit deltas are restored with a left/up/up-left row predictor
+and reduced to eight-bit BGRA; the public API description compares this stage
+to PNG's Up filter. The reader then returns RGBA.
+
+The second byte of the header flags selected four input channels for the
+transparent blank fixture and three channels for both opaque fixtures. In the
+three-channel mode the output alpha channel is filled with 255.
+
+Decoded results:
+
+- the blank transparent fixture produces 1,024 pixels with alpha zero;
+- both nonblank fixtures produce 1,024 pixels with alpha 255;
+- the red circle and overlapping red/green circles visually match the supplied
+  SAI2 thumbnails, including placement and overlap order.
 
 ## Assumed by the current implementation
 
@@ -86,9 +123,14 @@ raster layers. The files themselves remain ignored and are not published.
 - Whether older or future SAI2 versions use a different signature or header
   length.
 - Whether valid files can contain padding between the table and first chunk,
-  equal chunk offsets, nonzero final table fields, or chunks not ordered by
+  equal chunk offsets, nonzero high offset bits, or chunks not ordered by
   physical offset.
 - Semantics of chunk bodies beyond the limited prefixes listed above.
+- Real-file confirmation for multiple tile rows/columns and partial 256-pixel
+  edge tiles.
+- Meanings of all canvas-background flag values beyond the two observed modes.
+- Whether other format tags change the DPCM predictor, channel order, bitstream,
+  marker, or padding rules.
 
 These questions should be answered with purpose-built, user-owned fixtures and
 black-box comparison before the parser adds stricter validation.

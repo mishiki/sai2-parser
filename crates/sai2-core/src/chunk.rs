@@ -8,9 +8,8 @@ pub const CHUNK_ENTRY_LEN: usize = 16;
 pub struct Chunk {
     kind: FourCc,
     object_id: u32,
-    offset: u32,
+    offset: u64,
     size: usize,
-    reserved: u32,
 }
 
 impl Chunk {
@@ -46,8 +45,7 @@ impl Chunk {
             entries.push(RawChunk {
                 kind: FourCc::from_bytes(bytes_at::<4>(input, entry_offset)?),
                 object_id: u32_at(input, entry_offset + 4)?,
-                offset: u32_at(input, entry_offset + 8)?,
-                reserved: u32_at(input, entry_offset + 12)?,
+                offset: u64_at(input, entry_offset + 8)?,
             });
         }
 
@@ -76,16 +74,19 @@ impl Chunk {
             .map(|(index, entry)| {
                 let offset = usize::try_from(entry.offset)
                     .map_err(|_| invalid_offset(index, entry.offset, table_end, input.len()))?;
-                let end = entries
-                    .get(index + 1)
-                    .map_or(input.len(), |next| next.offset as usize);
+                let end = if let Some(next) = entries.get(index + 1) {
+                    usize::try_from(next.offset).map_err(|_| {
+                        invalid_offset(index + 1, next.offset, table_end, input.len())
+                    })?
+                } else {
+                    input.len()
+                };
 
                 Ok(Self {
                     kind: entry.kind,
                     object_id: entry.object_id,
                     offset: entry.offset,
                     size: end - offset,
-                    reserved: entry.reserved,
                 })
             })
             .collect()
@@ -105,7 +106,7 @@ impl Chunk {
 
     /// Returns the absolute byte offset of the chunk body.
     #[must_use]
-    pub const fn offset(&self) -> u32 {
+    pub const fn offset(&self) -> u64 {
         self.offset
     }
 
@@ -114,23 +115,16 @@ impl Chunk {
     pub const fn size(&self) -> usize {
         self.size
     }
-
-    /// Returns the final table field, documented as zero, without validating it.
-    #[must_use]
-    pub const fn reserved(&self) -> u32 {
-        self.reserved
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
 struct RawChunk {
     kind: FourCc,
     object_id: u32,
-    offset: u32,
-    reserved: u32,
+    offset: u64,
 }
 
-fn invalid_offset(index: usize, offset: u32, table_end: usize, file_len: usize) -> ParseError {
+fn invalid_offset(index: usize, offset: u64, table_end: usize, file_len: usize) -> ParseError {
     ParseError::InvalidChunkOffset {
         index,
         offset,
@@ -141,6 +135,10 @@ fn invalid_offset(index: usize, offset: u32, table_end: usize, file_len: usize) 
 
 fn u32_at(input: &[u8], offset: usize) -> Result<u32, ParseError> {
     Ok(u32::from_le_bytes(bytes_at::<4>(input, offset)?))
+}
+
+fn u64_at(input: &[u8], offset: usize) -> Result<u64, ParseError> {
+    Ok(u64::from_le_bytes(bytes_at::<8>(input, offset)?))
 }
 
 fn bytes_at<const N: usize>(input: &[u8], offset: usize) -> Result<[u8; N], ParseError> {
@@ -178,7 +176,6 @@ mod tests {
         bytes[80..84].copy_from_slice(&[0xff, 0, b'X', b' ']);
         bytes[84..88].copy_from_slice(&9_u32.to_le_bytes());
         bytes[88..92].copy_from_slice(&100_u32.to_le_bytes());
-        bytes[92..96].copy_from_slice(&42_u32.to_le_bytes());
 
         bytes[96..100].copy_from_slice(b"1234");
         bytes[100..106].copy_from_slice(b"567890");
@@ -195,14 +192,12 @@ mod tests {
         assert_eq!(document.chunks()[0].object_id(), 7);
         assert_eq!(document.chunks()[0].offset(), 96);
         assert_eq!(document.chunks()[0].size(), 4);
-        assert_eq!(document.chunks()[0].reserved(), 0);
         assert_eq!(
             document.chunks()[1].kind().as_bytes(),
             [0xff, 0, b'X', b' ']
         );
         assert_eq!(document.chunks()[1].offset(), 100);
         assert_eq!(document.chunks()[1].size(), 6);
-        assert_eq!(document.chunks()[1].reserved(), 42);
     }
 
     #[test]

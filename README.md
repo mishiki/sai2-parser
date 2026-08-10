@@ -15,19 +15,26 @@ could corrupt original artwork.
 
 ## Current compatibility
 
-Phase 2 implements compatibility level 0 plus top-level chunk discovery:
+Phase 3 provides experimental compatibility level 1 for the fixtures tested so
+far:
 
 - validates the 16-byte SAI2 signature;
 - parses the fixed 64-byte header;
 - reports canvas dimensions, flags, chunk count, background color, and the
   four-byte format tag;
 - returns structured errors for invalid and truncated input;
-- provides the `sai2-info` command-line tool.
+- provides the `sai2-info` command-line tool;
 - parses all 16-byte chunk-table entries without requiring known chunk types;
 - reports each chunk's type, object ID, absolute offset, and safely derived
-  body size.
+  body size;
+- decodes the merged `intg` image from bounded 16-bit delta/RLE tile streams;
+- supports the observed opaque three-channel and transparent four-channel
+  canvas modes;
+- writes standards-compliant RGBA PNG files with the `sai2-extract` CLI.
 
-Chunk bodies, integrated-image extraction, and layer decoding are not yet
+The decoder has been verified against three purpose-built 32 x 32, single-tile
+fixtures. Multi-tile canvases are implemented from the documented framing but
+still need independent real-file fixtures. Individual layer decoding is not yet
 implemented.
 
 ## Usage
@@ -35,6 +42,15 @@ implemented.
 ```console
 cargo run --bin sai2-info -- example.sai2
 ```
+
+Extract the merged image:
+
+```console
+cargo run --bin sai2-extract -- example.sai2 output.png
+```
+
+The PNG writer uses streaming, uncompressed DEFLATE blocks. This keeps memory
+usage bounded beyond the decoded RGBA image, at the cost of larger PNG files.
 
 Example output:
 
@@ -72,6 +88,12 @@ The primary public format reference used so far is Photopea's
 [unofficial SAI2 specification](https://github.com/photopea/SAI2-specification).
 Published descriptions are treated as hypotheses until they can be checked
 against independently owned fixture files.
+
+The DPCM work used the public implementation in
+[`Wunkolo/libsai`](https://github.com/Wunkolo/libsai) as a behavioral reference.
+The Rust decoder was written independently with explicit bounds and resource
+checks; no reference code was copied, and PaintTool SAI itself was not
+disassembled.
 
 ## License
 
