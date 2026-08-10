@@ -965,8 +965,12 @@ where
                 }
                 let mut color = [0_i32; N];
                 for channel in &mut color {
-                    *channel = i32::from(u16::from_le_bytes(read(stream, offset)?)) & 0x3fff;
+                    let value = i32::from(u16::from_le_bytes(read(stream, offset)?));
                     offset += 2;
+                    if value > CHANNEL_MAX {
+                        return Err(layer_error("lpix solid channel exceeds 14-bit maximum"));
+                    }
+                    *channel = value;
                 }
                 if block_intersects_canvas(
                     absolute_x,
@@ -1301,6 +1305,17 @@ mod tests {
         assert!(layers[3].image().is_some());
         assert!(layers[4].image().is_none());
         assert!(layers[5].image().is_some());
+
+        let solid = layers[5]
+            .image()
+            .expect("solid-color raster pixels should decode");
+        assert!(
+            solid
+                .pixels()
+                .chunks_exact(CHANNELS)
+                .all(|pixel| pixel == [255, 213, 0, 255]),
+            "the #FFD500 layer should fill the complete canvas"
+        );
 
         let mask = layers[2].mask().expect("bitmap layer should have a mask");
         assert_eq!(mask.id(), 12);

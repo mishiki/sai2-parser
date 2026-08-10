@@ -142,8 +142,11 @@ RGB channel values differ from the saved integrated image, all by exactly one
 level. The saved 14-bit premultiplied channels cannot always be represented
 losslessly as 8-bit straight alpha. `sai2topsd` therefore also embeds the saved
 integrated image as the PSD composite, which matches the supplied reference PNG
-pixel-for-pixel. The `5N` uniform-block channel flag bits are only tentatively
-understood; more fixtures are needed before calling that variant fully verified.
+pixel-for-pixel. An observed `5N` block stores one little-endian `uint16` per
+channel. The values are 14-bit fixed-point intensities whose inclusive maximum
+is `0x4000`, not `0x3fff`. A solid `#FFD500` fixture stores premultiplied BGRA
+as `[0x0000, 0x3556, 0x4000, 0x4000]`; masking these values with `0x3fff`
+would incorrectly turn full red and full alpha into zero.
 
 ### PSD source-layer preservation (`s2ly`)
 
@@ -252,8 +255,8 @@ output remain open work.
   equal chunk offsets, nonzero high offset bits, or chunks not ordered by
   physical offset.
 - Semantics of chunk bodies beyond the limited prefixes listed above.
-- Exact flag-bit semantics of the observed `5N` uniform-block channel words,
-  and whether other `lpix` block-grid variants use the same placement rules.
+- Whether other `5N` or `lpix` block-grid variants add flags to the observed
+  channel words or use different placement rules.
 - Meanings of all canvas-background flag values beyond the two observed modes.
 - Folder flag meanings beyond the observed nesting-depth low word and the
   `0x40000000` bit on one `fold` layer.
