@@ -65,7 +65,7 @@ fn converts_the_owned_folder_mask_and_vector_fixture_when_available() {
     assert!(psd.windows(8).any(|window| window == b"8BIMlsct"));
     assert!(psd.windows(4).any(|window| window == b"pass"));
     assert!(psd.windows(4).any(|window| window == b"idiv"));
-    assert!(psd.windows(4).any(|window| window == b"dark"));
+    assert!(psd.windows(4).any(|window| window == b"lite"));
     assert_eq!(
         psd.windows(8)
             .filter(|window| *window == b"8BIMs2ly")

@@ -543,7 +543,7 @@ fn psd_blend_key(layer: &Sai2Layer) -> [u8; 4] {
         value if value == *b"pass" => *b"pass",
         value if value == *b"mult" => *b"mul ",
         value if value == *b"burn" => *b"idiv",
-        value if value == *b"litn" => *b"dark",
+        value if value == *b"litn" => *b"lite",
         value if value == *b"scrn" => *b"scrn",
         value if value == *b"over" => *b"over",
         value if value == *b"dark" => *b"dark",

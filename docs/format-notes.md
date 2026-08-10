@@ -212,9 +212,9 @@ relative positions produces the observed rectangle corners `(18, 20)`,
 `(286, 20)`, `(286, 288)`, and `(18, 288)`.
 
 Observed blend keys map to PSD as follows: `pass` remains `pass`, `burn` maps
-to Color Burn (`idiv`), and the user-confirmed SAI2 mode 比較（暗） stored as
-`litn` maps to Darken (`dark`). These mappings are fixture-backed but are not a
-complete blend-mode table.
+to Color Burn (`idiv`), and the user-confirmed SAI2 mode 比較（明） stored as
+`litn` maps to Lighten (`lite`). These mappings are fixture-backed but are not
+a complete blend-mode table.
 
 The PSD writer currently gives decoded linework and shape layers transparent
 pixel channels while preserving their typed geometry and exact source chunks.
