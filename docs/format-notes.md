@@ -140,6 +140,29 @@ integrated image as the PSD composite, which matches the supplied reference PNG
 pixel-for-pixel. The `5N` uniform-block channel flag bits are only tentatively
 understood; more fixtures are needed before calling that variant fully verified.
 
+### PSD source-layer preservation (`s2ly`)
+
+`sai2topsd` writes one private Additional Layer Information block to every PSD
+layer. Its four-byte key is `s2ly`; it is not part of the SAI2 format. The
+payload uses big-endian integers, like its PSD container:
+
+| Size | Meaning |
+| ---: | --- |
+| 8 | ASCII `SAI2LYR` followed by zero |
+| 4 | preservation format version, currently 1 |
+| 4 | number of source chunks |
+| repeated | chunk records in original chunk-table order |
+
+Each chunk record contains its four-byte kind, 32-bit object ID, 64-bit source
+offset, 64-bit body size, and the exact body bytes. The block therefore retains
+unknown layer-specific data without interpreting or duplicating it in the core
+document model. Tests compare every embedded body byte with its owned SAI2
+fixture, and an independent PSD reader successfully opens the file while
+retaining the unknown tagged block. This provides a lossless preservation path
+for future linework/control-point and text decoders, but it does not yet expose
+those structures as editable PSD vector or text objects. Unknown/private PSD
+metadata can also be lost if another application re-saves the PSD.
+
 ## Assumed by the current implementation
 
 - The 16-byte signature is required exactly; accepting alternate magic values

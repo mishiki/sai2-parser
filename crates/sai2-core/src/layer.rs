@@ -1,4 +1,4 @@
-use crate::{DecodeLimits, FourCc, ParseError, RgbaImage, Sai2Document};
+use crate::{Chunk, DecodeLimits, FourCc, ParseError, RgbaImage, Sai2Document};
 
 const LAYER_HEADER_LEN: usize = 56;
 const BLOCK_SIZE: usize = 32;
@@ -20,6 +20,7 @@ pub struct Sai2Layer {
     block_origin_y: i32,
     block_width: u32,
     tile_count: u32,
+    source_chunks: Vec<Chunk>,
     image: Option<RgbaImage>,
 }
 
@@ -64,6 +65,15 @@ impl Sai2Layer {
     pub const fn image(&self) -> Option<&RgbaImage> {
         self.image.as_ref()
     }
+    /// Returns the original SAI2 chunks associated with this layer.
+    ///
+    /// The records retain offsets into the input rather than copying chunk
+    /// bodies, so callers can preserve still-unknown layer data without a
+    /// second allocation proportional to the source document.
+    #[must_use]
+    pub fn source_chunks(&self) -> &[Chunk] {
+        &self.source_chunks
+    }
     #[must_use]
     pub const fn visible(&self) -> bool {
         self.flags & 0x0001_0000 != 0
@@ -103,6 +113,12 @@ pub fn decode_layers(input: &[u8], limits: DecodeLimits) -> Result<Vec<Sai2Layer
     {
         let body = chunk_body(input, chunk)?;
         let mut layer = parse_layer(body)?;
+        layer.source_chunks = document
+            .chunks()
+            .iter()
+            .filter(|candidate| candidate.object_id() == layer.id)
+            .cloned()
+            .collect();
         if layer.layer_type == FourCc::from_bytes(*b"norm") {
             if let Some(pixel_chunk) = document.chunks().iter().find(|candidate| {
                 candidate.kind() == FourCc::from_bytes(*b"lpix")
@@ -174,6 +190,7 @@ fn parse_layer(body: &[u8]) -> Result<Sai2Layer, ParseError> {
         block_origin_y,
         block_width,
         tile_count,
+        source_chunks: Vec::new(),
         image: None,
     })
 }

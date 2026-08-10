@@ -44,6 +44,7 @@ fn run() -> Result<(), String> {
         document.header().height(),
         &layers,
         &composite,
+        &input,
     )?;
     output
         .flush()
@@ -66,6 +67,7 @@ fn parse_paths(
     if first == "-h" || first == "--help" {
         println!("Usage: sai2topsd <input.sai2> <output.psd>");
         println!("Convert decoded SAI2 raster layers to a layered PSD file.");
+        println!("Original per-layer chunks are preserved in private s2ly metadata.");
         return Ok(None);
     }
     let Some(second) = arguments.next() else {

@@ -35,7 +35,10 @@ the first tested slice of layered export:
   counts from `layr` chunks;
 - decodes observed sparse, offset `lpix` block grids into straight-alpha RGBA;
 - writes those decoded layers, Unicode names, visibility, opacity, and basic
-  blend modes to a PSD 1.0 file with the `sai2topsd` CLI.
+  blend modes to a PSD 1.0 file with the `sai2topsd` CLI;
+- embeds every original chunk associated with each layer in a private PSD
+  `s2ly` tagged block, retaining still-unknown vector, text, mask, and other
+  layer payloads bit-for-bit for future decoders.
 
 The decoder has been verified against three purpose-built 32 x 32 fixtures and
 a 300 x 300 artwork fixture whose layer uses a sparse 22 x 32 block grid with a
@@ -68,7 +71,11 @@ cargo run --bin sai2topsd -- example.sai2 output.psd
 The generated PSD carries the saved `intg` image as its composite preview, so
 applications that only read the flattened PSD view still see the exact saved
 canvas. Applications with PSD layer support can edit the independently decoded
-raster layers.
+raster layers. Each PSD layer also carries a private `s2ly` tagged block with
+the exact source `layr`, `lpix`, and any other chunks that share its object ID.
+PSD readers are required to skip unknown tagged blocks; this has been tested
+with `psd-tools`. Applications may discard private metadata when re-saving a
+PSD, so the original `.sai2` remains the archival source of truth.
 
 The PNG writer uses streaming, uncompressed DEFLATE blocks. This keeps memory
 usage bounded beyond the decoded RGBA image, at the cost of larger PNG files.
