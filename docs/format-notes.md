@@ -98,6 +98,34 @@ Decoded results:
   supplied reference PNG in zero of 90,000 pixels, including across both
   256-pixel tile boundaries.
 
+### Raster layers (`layr` / `lpix`)
+
+The fixed 56-byte portion of every observed `layr` chunk agrees with the public
+field ordering for layer ID, type, four unknown signed integers, an unknown
+integer, tile count, blend mode, opacity, and flags. The observed `name`
+parameter begins with a little-endian UTF-16 code-unit count followed by the
+UTF-16LE layer name.
+
+The two-layer 32 x 32 fixture has one outer `lpix` tile per layer. Each outer
+tile contains one compressed 32 x 32 pixel block:
+
+1. marker `ff a0`;
+2. a little-endian `uint16` compressed byte length;
+3. one DPCM stream covering 1,024 pixels and four channels;
+4. terminal marker `ff f1`.
+
+The same LSB-first delta/RLE vocabulary used by `intg` decodes the block when
+the 32 x 32 pixels are treated as a single four-channel stream. The restored
+channels are 14-bit premultiplied BGRA with `0x4000` as full intensity. The
+reader applies the two-dimensional predictor per 32-pixel row, converts to
+straight-alpha RGBA, and crops the block to the canvas.
+
+The 300 x 300 artwork has 32 outer `lpix` tiles and additionally exhibits
+compressed block markers `ff aN`, apparent uniform-color markers `ff 5N`, skip
+records `ff 0N`, and `ff fN` terminal records. Their complete tile-coordinate
+mapping is not established, so the reader currently retains this layer's
+metadata but deliberately does not emit guessed pixels.
+
 ## Assumed by the current implementation
 
 - The 16-byte signature is required exactly; accepting alternate magic values
@@ -130,6 +158,8 @@ Decoded results:
   equal chunk offsets, nonzero high offset bits, or chunks not ordered by
   physical offset.
 - Semantics of chunk bodies beyond the limited prefixes listed above.
+- Complete placement rules for multi-tile and sparse `lpix` block grids, and
+  the exact semantics of the observed `0N`, `5N`, and terminal marker variants.
 - Meanings of all canvas-background flag values beyond the two observed modes.
 - Whether other format tags change the DPCM predictor, channel order, bitstream,
   marker, or padding rules.

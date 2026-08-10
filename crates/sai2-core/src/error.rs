@@ -33,6 +33,8 @@ pub enum ParseError {
     ImageTooLarge { pixels: u64, max_pixels: u64 },
     /// The integrated-image stream is malformed or truncated.
     MalformedDpcm { reason: &'static str },
+    /// A layer descriptor or layer-pixel stream is malformed.
+    MalformedLayer { reason: &'static str },
 }
 
 impl fmt::Display for ParseError {
@@ -88,6 +90,9 @@ impl fmt::Display for ParseError {
             ),
             Self::MalformedDpcm { reason } => {
                 write!(formatter, "malformed SAI2 DPCM image: {reason}")
+            }
+            Self::MalformedLayer { reason } => {
+                write!(formatter, "malformed SAI2 layer data: {reason}")
             }
         }
     }

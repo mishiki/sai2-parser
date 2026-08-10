@@ -15,8 +15,8 @@ could corrupt original artwork.
 
 ## Current compatibility
 
-Phase 3 provides experimental compatibility level 1 for the fixtures tested so
-far:
+The current implementation provides experimental compatibility level 1 plus
+the first tested slice of layered export:
 
 - validates the 16-byte SAI2 signature;
 - parses the fixed 64-byte header;
@@ -31,11 +31,19 @@ far:
 - supports the observed opaque three-channel and transparent four-channel
   canvas modes;
 - writes standards-compliant RGBA PNG files with the `sai2-extract` CLI.
+- parses raster-layer IDs, names, types, blend modes, opacity, flags, and tile
+  counts from `layr` chunks;
+- decodes the observed single-block `lpix` layout into straight-alpha RGBA;
+- writes those decoded layers, Unicode names, visibility, opacity, and basic
+  blend modes to a PSD 1.0 file with the `sai2topsd` CLI.
 
 The decoder has been verified against three purpose-built 32 x 32, single-tile
 fixtures and a 300 x 300 four-tile artwork fixture with partial edge tiles. Its
-output matched the supplied 300 x 300 reference PNG pixel-for-pixel. Individual
-layer decoding is not yet implemented.
+output matched the supplied 300 x 300 reference PNG pixel-for-pixel. The
+individual red and green raster layers in the 32 x 32 two-layer fixture decode
+successfully. Larger sparse `lpix` grids, folders, masks, vector linework,
+shapes, and text are not decoded yet; `sai2topsd` reports an error instead of
+silently flattening an unsupported document.
 
 ## Usage
 
@@ -48,6 +56,17 @@ Extract the merged image:
 ```console
 cargo run --bin sai2-extract -- example.sai2 output.png
 ```
+
+Convert supported raster layers to PSD:
+
+```console
+cargo run --bin sai2topsd -- example.sai2 output.psd
+```
+
+The generated PSD carries the saved `intg` image as its composite preview, so
+applications that only read the flattened PSD view still see the exact saved
+canvas. Applications with PSD layer support can edit the independently decoded
+raster layers.
 
 The PNG writer uses streaming, uncompressed DEFLATE blocks. This keeps memory
 usage bounded beyond the decoded RGBA image, at the cost of larger PNG files.
@@ -72,7 +91,8 @@ Chunks:
 
 - `crates/sai2-core`: byte-oriented parsing library with no filesystem or
   operating-system dependency;
-- `crates/sai2-cli`: command-line front end;
+- `crates/sai2-cli`: `sai2-info`, `sai2-extract`, and `sai2topsd` command-line
+  front ends;
 - `docs/format-notes.md`: known, observed, assumed, and unknown format facts;
 - `fixtures/README.md`: policy for private and publishable test fixtures.
 

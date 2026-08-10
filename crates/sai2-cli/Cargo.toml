@@ -18,5 +18,9 @@ path = "src/main.rs"
 name = "sai2-extract"
 path = "src/bin/sai2-extract.rs"
 
+[[bin]]
+name = "sai2topsd"
+path = "src/bin/sai2topsd.rs"
+
 [lints]
 workspace = true

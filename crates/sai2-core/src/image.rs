@@ -27,6 +27,14 @@ pub struct RgbaImage {
 }
 
 impl RgbaImage {
+    pub(crate) fn from_pixels(width: u32, height: u32, pixels: Vec<u8>) -> Self {
+        Self {
+            width,
+            height,
+            pixels,
+        }
+    }
+
     #[must_use]
     pub const fn width(&self) -> u32 {
         self.width
@@ -212,7 +220,7 @@ pub fn decode_integrated_image(
     })
 }
 
-fn decode_delta_row(
+pub(crate) fn decode_delta_row(
     compressed: &[u8],
     deltas: &mut [i16],
     pixel_count: usize,
