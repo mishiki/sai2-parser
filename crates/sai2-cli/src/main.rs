@@ -1,6 +1,6 @@
 use std::{env, fs, path::PathBuf, process::ExitCode};
 
-use sai2_core::Sai2Header;
+use sai2_core::Sai2Document;
 
 fn main() -> ExitCode {
     match run() {
@@ -18,7 +18,8 @@ fn run() -> Result<(), String> {
     };
     let bytes =
         fs::read(&path).map_err(|error| format!("could not read {}: {error}", path.display()))?;
-    let header = Sai2Header::parse(&bytes).map_err(|error| error.to_string())?;
+    let document = Sai2Document::parse(&bytes).map_err(|error| error.to_string())?;
+    let header = document.header();
 
     println!("SAI2 document");
     println!("Canvas: {} x {}", header.width(), header.height());
@@ -26,6 +27,16 @@ fn run() -> Result<(), String> {
     println!("Chunk count: {}", header.chunk_count());
     println!("Background color: 0x{:08x}", header.background_color());
     println!("Format tag: {}", header.format_tag());
+    println!("Chunks:");
+    for chunk in document.chunks() {
+        println!(
+            "  {} id={} offset={} size={}",
+            chunk.kind(),
+            chunk.object_id(),
+            chunk.offset(),
+            chunk.size()
+        );
+    }
 
     Ok(())
 }
@@ -39,7 +50,7 @@ fn parse_path(
 
     if first == "-h" || first == "--help" {
         println!("Usage: sai2-info <file.sai2>");
-        println!("Parse and display the fixed SAI2 document header.");
+        println!("Parse and display the SAI2 document header and chunk table.");
         return Ok(None);
     }
 

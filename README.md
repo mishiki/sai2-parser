@@ -15,7 +15,7 @@ could corrupt original artwork.
 
 ## Current compatibility
 
-Phase 1 implements compatibility level 0:
+Phase 2 implements compatibility level 0 plus top-level chunk discovery:
 
 - validates the 16-byte SAI2 signature;
 - parses the fixed 64-byte header;
@@ -23,8 +23,11 @@ Phase 1 implements compatibility level 0:
   four-byte format tag;
 - returns structured errors for invalid and truncated input;
 - provides the `sai2-info` command-line tool.
+- parses all 16-byte chunk-table entries without requiring known chunk types;
+- reports each chunk's type, object ID, absolute offset, and safely derived
+  body size.
 
-Chunk tables, integrated-image extraction, and layer decoding are not yet
+Chunk bodies, integrated-image extraction, and layer decoding are not yet
 implemented.
 
 ## Usage
@@ -42,6 +45,11 @@ Flags: 0x00000100
 Chunk count: 12
 Background color: 0xff808080
 Format tag: norm
+Chunks:
+  hist id=0 offset=128 size=88
+  intg id=0 offset=216 size=688
+  layr id=2 offset=904 size=80
+  lpix id=2 offset=984 size=1308
 ```
 
 ## Workspace
