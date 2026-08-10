@@ -36,6 +36,9 @@ the first tested slice of layered export:
 - decodes observed sparse, offset `lpix` block grids into straight-alpha RGBA;
 - writes those decoded layers, Unicode names, visibility, opacity, and basic
   blend modes to a PSD 1.0 file with the `sai2topsd` CLI;
+- reverses SAI2's top-to-bottom layer records into PSD compositing order and,
+  for the observed opaque canvas mode, adds an editable white canvas-background
+  layer so recompositing the PSD layers reproduces SAI2's saved appearance;
 - embeds every original chunk associated with each layer in a private PSD
   `s2ly` tagged block, retaining still-unknown vector, text, mask, and other
   layer payloads bit-for-bit for future decoders.
@@ -76,6 +79,12 @@ the exact source `layr`, `lpix`, and any other chunks that share its object ID.
 PSD readers are required to skip unknown tagged blocks; this has been tested
 with `psd-tools`. Applications may discard private metadata when re-saving a
 PSD, so the original `.sai2` remains the archival source of truth.
+
+The two-layer 32 x 32 fixture recomposites from its PSD layers within one 8-bit
+level of the saved integrated image. The 300 x 300 artwork recomposites within
+two levels. Its original integrated image remains embedded pixel-for-pixel as
+the PSD composite preview. Transparent SAI2 canvases do not receive the
+synthetic white background layer.
 
 The PNG writer uses streaming, uncompressed DEFLATE blocks. This keeps memory
 usage bounded beyond the decoded RGBA image, at the cost of larger PNG files.

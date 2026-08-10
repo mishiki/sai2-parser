@@ -129,8 +129,7 @@ pub fn decode_integrated_image(
         tile_sizes.push(size);
     }
 
-    let background_flags = header.flags().to_le_bytes()[1];
-    let input_channels = if background_flags.trailing_zeros() >= 3 {
+    let input_channels = if header.integrated_image_has_alpha() {
         4
     } else {
         3

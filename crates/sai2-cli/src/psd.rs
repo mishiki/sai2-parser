@@ -5,6 +5,7 @@ use sai2_core::{RgbaImage, Sai2Layer};
 const CHANNEL_IDS: [i16; 4] = [0, 1, 2, -1];
 const SAI2_LAYER_DATA_KEY: &[u8; 4] = b"s2ly";
 const SAI2_LAYER_DATA_MAGIC: &[u8; 8] = b"SAI2LYR\0";
+const BACKGROUND_NAME: &str = "SAI2 Canvas Background";
 
 #[allow(clippy::too_many_lines)]
 pub fn write_layered(
@@ -14,6 +15,7 @@ pub fn write_layered(
     layers: &[Sai2Layer],
     composite: &RgbaImage,
     source: &[u8],
+    white_background: bool,
 ) -> Result<(), String> {
     if width == 0 || height == 0 || width > 30_000 || height > 30_000 {
         return Err(format!(
@@ -49,12 +51,21 @@ pub fn write_layered(
         .iter()
         .map(layer_extra_len)
         .collect::<Result<Vec<_>, _>>()?;
-    let records_len = extra_lens.iter().try_fold(0_usize, |sum, extra_len| {
+    let mut records_len = extra_lens.iter().try_fold(0_usize, |sum, extra_len| {
         sum.checked_add(layer_record_len(*extra_len))
             .ok_or_else(|| "PSD layer records are too large".to_owned())
     })?;
-    let image_data_len = layers
+    let background_extra_len = basic_layer_extra_len(BACKGROUND_NAME, BACKGROUND_NAME)?;
+    if white_background {
+        records_len = records_len
+            .checked_add(layer_record_len(background_extra_len))
+            .ok_or_else(|| "PSD layer records are too large".to_owned())?;
+    }
+    let output_layer_count = layers
         .len()
+        .checked_add(usize::from(white_background))
+        .ok_or_else(|| "PSD has too many layers".to_owned())?;
+    let image_data_len = output_layer_count
         .checked_mul(4)
         .and_then(|count| count.checked_mul(pixel_count + 2))
         .ok_or_else(|| "PSD layer image data is too large".to_owned())?;
@@ -84,10 +95,22 @@ pub fn write_layered(
     write_u32(output, checked_u32(layer_info_len)?)?;
     write_i16(
         output,
-        i16::try_from(layers.len()).map_err(|_| "PSD has too many layers")?,
+        i16::try_from(output_layer_count).map_err(|_| "PSD has too many layers")?,
     )?;
 
-    for (layer, extra_len) in layers.iter().zip(&extra_lens) {
+    if white_background {
+        write_common_layer_record(output, width, height, channel_data_len)?;
+        output.write_all(b"8BIMnorm").map_err(io_error)?;
+        output.write_all(&[255, 0, 0, 0]).map_err(io_error)?;
+        write_u32(output, checked_u32(background_extra_len)?)?;
+        write_u32(output, 0)?; // layer mask
+        write_u32(output, 0)?; // blending ranges
+        write_pascal_name(output, BACKGROUND_NAME)?;
+        write_unicode_name(output, BACKGROUND_NAME)?;
+    }
+    // SAI2 lists layers from top to bottom, while PSD layer records are
+    // composited from the first (bottom) record to the last (top) record.
+    for (layer, extra_len) in layers.iter().zip(&extra_lens).rev() {
         write_i32(output, 0)?;
         write_i32(output, 0)?;
         write_i32(
@@ -115,12 +138,18 @@ pub fn write_layered(
         write_u32(output, checked_u32(*extra_len)?)?;
         write_u32(output, 0)?; // layer mask
         write_u32(output, 0)?; // blending ranges
-        write_pascal_name(output, layer)?;
+        write_pascal_name(output, &format!("Layer {}", layer.id()))?;
         write_unicode_name(output, layer.name())?;
         write_sai2_layer_data(output, layer, source)?;
     }
 
-    for layer in layers {
+    if white_background {
+        for _ in 0..4 {
+            write_u16(output, 0)?; // raw channel data
+            write_solid_plane(output, 255, pixel_count)?;
+        }
+    }
+    for layer in layers.iter().rev() {
         let pixels = layer.image().expect("layers were validated").pixels();
         for channel in 0..4 {
             write_u16(output, 0)?; // raw channel data
@@ -139,16 +168,37 @@ pub fn write_layered(
     Ok(())
 }
 
+fn write_common_layer_record(
+    output: &mut impl Write,
+    width: u32,
+    height: u32,
+    channel_data_len: u32,
+) -> Result<(), String> {
+    write_i32(output, 0)?;
+    write_i32(output, 0)?;
+    write_i32(
+        output,
+        i32::try_from(height).map_err(|_| "PSD height is too large")?,
+    )?;
+    write_i32(
+        output,
+        i32::try_from(width).map_err(|_| "PSD width is too large")?,
+    )?;
+    write_u16(output, 4)?;
+    for id in CHANNEL_IDS {
+        write_i16(output, id)?;
+        write_u32(output, channel_data_len)?;
+    }
+    Ok(())
+}
+
 fn layer_record_len(extra_len: usize) -> usize {
     16 + 2 + 4 * 6 + 12 + 4 + extra_len
 }
 
 fn layer_extra_len(layer: &Sai2Layer) -> Result<usize, String> {
-    let base = 4_usize
-        .checked_add(4)
-        .and_then(|length| length.checked_add(pascal_name_len(layer)))
-        .and_then(|length| length.checked_add(unicode_name_block_len(layer.name())))
-        .ok_or_else(|| "PSD layer extra data is too large".to_owned())?;
+    let fallback = format!("Layer {}", layer.id());
+    let base = basic_layer_extra_len(&fallback, layer.name())?;
     base.checked_add(sai2_layer_block_len(layer)?)
         .ok_or_else(|| "PSD layer extra data is too large".to_owned())
 }
@@ -173,9 +223,16 @@ fn sai2_layer_block_len(layer: &Sai2Layer) -> Result<usize, String> {
         .ok_or_else(|| "embedded SAI2 layer block is too large".to_owned())
 }
 
-fn pascal_name_len(layer: &Sai2Layer) -> usize {
-    let fallback = format!("Layer {}", layer.id());
-    round_up(1 + fallback.len().min(255), 4)
+fn basic_layer_extra_len(pascal_name: &str, unicode_name: &str) -> Result<usize, String> {
+    4_usize
+        .checked_add(4)
+        .and_then(|length| length.checked_add(pascal_name_len(pascal_name)))
+        .and_then(|length| length.checked_add(unicode_name_block_len(unicode_name)))
+        .ok_or_else(|| "PSD layer extra data is too large".to_owned())
+}
+
+fn pascal_name_len(name: &str) -> usize {
+    round_up(1 + name.len().min(255), 4)
 }
 
 fn unicode_name_block_len(name: &str) -> usize {
@@ -183,9 +240,8 @@ fn unicode_name_block_len(name: &str) -> usize {
     12 + round_up(data_len, 4)
 }
 
-fn write_pascal_name(output: &mut impl Write, layer: &Sai2Layer) -> Result<(), String> {
-    let fallback = format!("Layer {}", layer.id());
-    let bytes = fallback.as_bytes();
+fn write_pascal_name(output: &mut impl Write, name: &str) -> Result<(), String> {
+    let bytes = name.as_bytes();
     let length = bytes.len().min(255);
     output
         .write_all(&[u8::try_from(length).map_err(|_| "PSD layer name is too long")?])
@@ -280,6 +336,18 @@ fn write_plane(output: &mut impl Write, rgba: &[u8], channel: usize) -> Result<(
     output.write_all(&plane).map_err(io_error)
 }
 
+fn write_solid_plane(output: &mut impl Write, value: u8, length: usize) -> Result<(), String> {
+    const BUFFER_LEN: usize = 8 * 1024;
+    let buffer = [value; BUFFER_LEN];
+    let mut remaining = length;
+    while remaining != 0 {
+        let count = remaining.min(BUFFER_LEN);
+        output.write_all(&buffer[..count]).map_err(io_error)?;
+        remaining -= count;
+    }
+    Ok(())
+}
+
 fn checked_pixel_count(width: u32, height: u32) -> Result<usize, String> {
     usize::try_from(u64::from(width) * u64::from(height))
         .map_err(|_| "PSD canvas is too large".to_owned())
@@ -316,7 +384,7 @@ fn io_error(error: std::io::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sai2_core::{DecodeLimits, decode_integrated_image, decode_layers};
+    use sai2_core::{DecodeLimits, FourCc, Sai2Document, decode_integrated_image, decode_layers};
 
     #[test]
     fn writes_a_layered_psd_when_the_owned_fixture_is_available() {
@@ -328,7 +396,7 @@ mod tests {
         let composite = decode_integrated_image(&input, DecodeLimits::default()).unwrap();
         let layers = decode_layers(&input, DecodeLimits::default()).unwrap();
         let mut psd = Vec::new();
-        write_layered(&mut psd, 32, 32, &layers, &composite, &input).unwrap();
+        write_layered(&mut psd, 32, 32, &layers, &composite, &input, true).unwrap();
 
         assert_eq!(&psd[..4], b"8BPS");
         assert_eq!(u16::from_be_bytes(psd[12..14].try_into().unwrap()), 4);
@@ -352,9 +420,65 @@ mod tests {
             .enumerate()
             .filter_map(|(offset, window)| (window == b"8BIMs2ly").then_some(offset))
             .collect::<Vec<_>>();
-        for (layer, block_offset) in layers.iter().zip(blocks) {
+        for (layer, block_offset) in layers.iter().rev().zip(blocks) {
             assert_preserved_layer_chunks(&psd, block_offset, layer, &input);
         }
+    }
+
+    #[test]
+    fn maps_an_invisible_sai2_layer_to_the_psd_hidden_flag() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/private/32x32-redball-greenball-multiple-layer.sai2");
+        let Ok(mut input) = std::fs::read(path) else {
+            return;
+        };
+        let document = Sai2Document::parse(&input).unwrap();
+        let layer_offset = usize::try_from(
+            document
+                .chunks()
+                .iter()
+                .find(|chunk| chunk.kind() == FourCc::from_bytes(*b"layr"))
+                .unwrap()
+                .offset(),
+        )
+        .unwrap();
+        let flags_offset = layer_offset + 52;
+        let flags = u32::from_le_bytes(input[flags_offset..flags_offset + 4].try_into().unwrap())
+            & !0x0001_0000;
+        input[flags_offset..flags_offset + 4].copy_from_slice(&flags.to_le_bytes());
+
+        let composite = decode_integrated_image(&input, DecodeLimits::default()).unwrap();
+        let layers = decode_layers(&input, DecodeLimits::default()).unwrap();
+        assert!(!layers[0].visible());
+        let mut psd = Vec::new();
+        write_layered(&mut psd, 32, 32, &layers, &composite, &input, true).unwrap();
+
+        let record = psd
+            .windows(8)
+            .position(|window| window == b"8BIMmul ")
+            .unwrap();
+        assert_eq!(psd[record + 10] & 2, 2);
+    }
+
+    #[test]
+    fn omits_the_synthetic_background_for_a_transparent_canvas() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/private/32x32-blank-transparent-background.sai2");
+        let Ok(input) = std::fs::read(path) else {
+            return;
+        };
+        let document = Sai2Document::parse(&input).unwrap();
+        assert!(document.header().integrated_image_has_alpha());
+        let composite = decode_integrated_image(&input, DecodeLimits::default()).unwrap();
+        let layers = decode_layers(&input, DecodeLimits::default()).unwrap();
+        let mut psd = Vec::new();
+        write_layered(&mut psd, 32, 32, &layers, &composite, &input, false).unwrap();
+
+        assert!(
+            !psd.windows(BACKGROUND_NAME.len())
+                .any(|window| window == BACKGROUND_NAME.as_bytes())
+        );
+        assert_eq!(i16::from_be_bytes(psd[42..44].try_into().unwrap()), 1);
     }
 
     fn assert_preserved_layer_chunks(

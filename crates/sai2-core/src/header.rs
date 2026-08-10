@@ -95,6 +95,15 @@ impl Sai2Header {
         self.flags
     }
 
+    /// Reports whether the saved integrated image uses an alpha channel.
+    ///
+    /// This bit interpretation is verified against the currently owned opaque
+    /// and transparent fixtures. Unknown flag combinations remain accepted.
+    #[must_use]
+    pub const fn integrated_image_has_alpha(&self) -> bool {
+        self.flags.to_le_bytes()[1].trailing_zeros() >= 3
+    }
+
     #[must_use]
     pub const fn width(&self) -> u32 {
         self.width
@@ -178,6 +187,7 @@ mod tests {
         let header = Sai2Header::parse(&valid_header()).expect("valid header should parse");
 
         assert_eq!(header.flags(), 0x0100);
+        assert!(!header.integrated_image_has_alpha());
         assert_eq!(header.width(), 4096);
         assert_eq!(header.height(), 2048);
         assert_eq!(header.unknown_0(), 0x1122_3344);
@@ -186,6 +196,16 @@ mod tests {
         assert_eq!(header.reserved(), [0; 16]);
         assert_eq!(header.background_color(), 0xff80_8080);
         assert_eq!(header.format_tag(), FourCc::from_bytes(*b"norm"));
+    }
+
+    #[test]
+    fn identifies_the_observed_transparent_integrated_image_flag() {
+        let mut bytes = valid_header();
+        bytes[16..20].copy_from_slice(&0x2000_u32.to_le_bytes());
+
+        let header = Sai2Header::parse(&bytes).unwrap();
+
+        assert!(header.integrated_image_has_alpha());
     }
 
     #[test]

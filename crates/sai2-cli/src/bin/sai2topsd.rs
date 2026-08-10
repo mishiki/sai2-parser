@@ -45,6 +45,7 @@ fn run() -> Result<(), String> {
         &layers,
         &composite,
         &input,
+        !document.header().integrated_image_has_alpha(),
     )?;
     output
         .flush()

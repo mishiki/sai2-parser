@@ -87,6 +87,11 @@ The second byte of the header flags selected four input channels for the
 transparent blank fixture and three channels for both opaque fixtures. In the
 three-channel mode the output alpha channel is filled with 255.
 
+The tested opaque fixtures use header flags `0x00000100` and display over a
+white canvas; the transparent fixture uses `0x00002000`. `sai2topsd` adds a
+white bottom layer only for the observed three-channel/opaque mode. This is an
+export representation of SAI2's canvas setting, not a source `layr` chunk.
+
 Decoded results:
 
 - the blank transparent fixture produces 1,024 pixels with alpha zero;
@@ -162,6 +167,14 @@ retaining the unknown tagged block. This provides a lossless preservation path
 for future linework/control-point and text decoders, but it does not yet expose
 those structures as editable PSD vector or text objects. Unknown/private PSD
 metadata can also be lost if another application re-saves the PSD.
+
+SAI2 `layr` chunks in the owned two-layer fixture occur from top to bottom. PSD
+layer records are composited from bottom to top, so `sai2topsd` reverses the
+source order and places the synthetic canvas background first. Independent
+`psd-tools` recomposition differs from the saved 32 x 32 composite by at most
+one 8-bit level and from the 300 x 300 composite by at most two levels. The
+remaining error is consistent with converting SAI2's 14-bit premultiplied
+channels into PSD's 8-bit straight-alpha representation and renderer rounding.
 
 ## Assumed by the current implementation
 
