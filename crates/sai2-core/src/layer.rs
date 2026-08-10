@@ -2,7 +2,7 @@ use crate::{DecodeLimits, FourCc, ParseError, RgbaImage, Sai2Document};
 
 const LAYER_HEADER_LEN: usize = 56;
 const BLOCK_SIZE: usize = 32;
-const BLOCK_SIZE_U32: u32 = 32;
+const BLOCK_SIZE_I64: i64 = 32;
 const BLOCK_PIXELS: usize = BLOCK_SIZE * BLOCK_SIZE;
 const CHANNELS: usize = 4;
 const CHANNEL_MAX: i32 = 0x4000;
@@ -16,6 +16,9 @@ pub struct Sai2Layer {
     opacity: u8,
     flags: u32,
     name: String,
+    block_origin_x: i32,
+    block_origin_y: i32,
+    block_width: u32,
     tile_count: u32,
     image: Option<RgbaImage>,
 }
@@ -48,6 +51,14 @@ impl Sai2Layer {
     #[must_use]
     pub const fn tile_count(&self) -> u32 {
         self.tile_count
+    }
+    #[must_use]
+    pub const fn block_origin(&self) -> (i32, i32) {
+        (self.block_origin_x, self.block_origin_y)
+    }
+    #[must_use]
+    pub const fn block_dimensions(&self) -> (u32, u32) {
+        (self.block_width, self.tile_count)
     }
     #[must_use]
     pub const fn image(&self) -> Option<&RgbaImage> {
@@ -98,12 +109,15 @@ pub fn decode_layers(input: &[u8], limits: DecodeLimits) -> Result<Vec<Sai2Layer
                     && candidate.object_id() == layer.id
             }) {
                 let pixel_body = chunk_body(input, pixel_chunk)?;
-                layer.image = decode_small_raster_layer(
+                layer.image = Some(decode_raster_layer(
                     pixel_body,
+                    layer.block_origin_x,
+                    layer.block_origin_y,
+                    layer.block_width,
                     layer.tile_count,
                     header.width(),
                     header.height(),
-                )?;
+                )?);
             }
         }
         layers.push(layer);
@@ -117,6 +131,9 @@ fn parse_layer(body: &[u8]) -> Result<Sai2Layer, ParseError> {
     }
     let id = u32::from_le_bytes(read(body, 4)?);
     let layer_type = FourCc::from_bytes(read(body, 16)?);
+    let block_origin_x = i32::from_le_bytes(read(body, 28)?);
+    let block_origin_y = i32::from_le_bytes(read(body, 32)?);
+    let block_width = u32::from_le_bytes(read(body, 36)?);
     let tile_count = u32::from_le_bytes(read(body, 40)?);
     let blend_mode = FourCc::from_bytes(read(body, 44)?);
     let opacity_raw = u32::from_le_bytes(read(body, 48)?);
@@ -153,6 +170,9 @@ fn parse_layer(body: &[u8]) -> Result<Sai2Layer, ParseError> {
         opacity,
         flags,
         name,
+        block_origin_x,
+        block_origin_y,
+        block_width,
         tile_count,
         image: None,
     })
@@ -177,94 +197,233 @@ fn decode_name(value: &[u8]) -> Result<String, ParseError> {
     String::from_utf16(&units).map_err(|_| layer_error("invalid UTF-16 layer name"))
 }
 
-fn decode_small_raster_layer(
+fn decode_raster_layer(
     body: &[u8],
-    tile_count: u32,
+    block_origin_x: i32,
+    block_origin_y: i32,
+    block_width: u32,
+    block_height: u32,
     width: u32,
     height: u32,
-) -> Result<Option<RgbaImage>, ParseError> {
-    if tile_count == 0 {
-        let len = image_len(width, height)?;
-        return Ok(Some(RgbaImage::from_pixels(width, height, vec![0; len])));
+) -> Result<RgbaImage, ParseError> {
+    let mut rgba = vec![0; image_len(width, height)?];
+    if block_width == 0 && block_height == 0 {
+        return Ok(RgbaImage::from_pixels(width, height, rgba));
     }
-    // The first compatibility slice deliberately handles the fully observed
-    // one-block fixture layout. Larger sparse tile grids remain metadata-only.
-    if tile_count != 1 || width > BLOCK_SIZE_U32 || height > BLOCK_SIZE_U32 {
-        return Ok(None);
+    if block_width == 0 || block_height == 0 {
+        return Err(layer_error("inconsistent lpix block dimensions"));
     }
-    if body.len() < 8 || read::<4>(body, 0)? != *b"dpcm" {
+    if body.len() < 4 || read::<4>(body, 0)? != *b"dpcm" {
         return Err(layer_error("unsupported lpix encoding"));
     }
-    let tile_size = usize::try_from(u32::from_le_bytes(read(body, 4)?))
-        .map_err(|_| layer_error("lpix tile is too large"))?;
-    let tile_end = 8_usize
-        .checked_add(tile_size)
-        .ok_or_else(|| layer_error("lpix tile overflow"))?;
-    let tile = body
-        .get(8..tile_end)
-        .ok_or_else(|| layer_error("truncated lpix tile"))?;
-    let values = decode_first_block(tile)?.unwrap_or([[0; CHANNELS]; BLOCK_PIXELS]);
-
-    let width_usize = usize::try_from(width).map_err(|_| layer_error("invalid layer width"))?;
-    let height_usize = usize::try_from(height).map_err(|_| layer_error("invalid layer height"))?;
-    let mut rgba = Vec::with_capacity(image_len(width, height)?);
-    for y in 0..height_usize {
-        for x in 0..width_usize {
-            let pixel = values[y * BLOCK_SIZE + x];
-            let alpha = pixel[3];
-            let r = unpremultiply(pixel[2], alpha);
-            let g = unpremultiply(pixel[1], alpha);
-            let b = unpremultiply(pixel[0], alpha);
-            rgba.extend_from_slice(&[r, g, b, scale_14_to_8(alpha)]);
-        }
+    let rows = usize::try_from(block_height).map_err(|_| layer_error("too many lpix rows"))?;
+    let table_bytes = rows
+        .checked_mul(4)
+        .and_then(|length| length.checked_add(4))
+        .ok_or_else(|| layer_error("lpix row-size table overflow"))?;
+    if body.len() < table_bytes {
+        return Err(layer_error("truncated lpix row-size table"));
     }
-    Ok(Some(RgbaImage::from_pixels(width, height, rgba)))
+
+    let mut row_sizes = Vec::with_capacity(rows);
+    for row in 0..rows {
+        let offset = 4 + row * 4;
+        row_sizes.push(
+            usize::try_from(u32::from_le_bytes(read(body, offset)?))
+                .map_err(|_| layer_error("lpix row is too large"))?,
+        );
+    }
+    let mut offset = table_bytes;
+    for (row, size) in row_sizes.into_iter().enumerate() {
+        let end = offset
+            .checked_add(size)
+            .ok_or_else(|| layer_error("lpix row overflow"))?;
+        let stream = body
+            .get(offset..end)
+            .ok_or_else(|| layer_error("truncated lpix row"))?;
+        decode_block_row(
+            stream,
+            block_origin_x,
+            block_origin_y,
+            block_width,
+            row,
+            width,
+            height,
+            &mut rgba,
+        )?;
+        offset = end;
+    }
+    let padding = body
+        .get(offset..)
+        .ok_or_else(|| layer_error("invalid lpix padding"))?;
+    if padding.len() > 3 || padding.iter().any(|byte| *byte != 0) {
+        return Err(layer_error("invalid lpix padding"));
+    }
+    Ok(RgbaImage::from_pixels(width, height, rgba))
 }
 
-fn decode_first_block(tile: &[u8]) -> Result<Option<[[i32; CHANNELS]; BLOCK_PIXELS]>, ParseError> {
-    let mut offset = 0;
-    while offset + 2 <= tile.len() {
-        let marker = u16::from_le_bytes(read(tile, offset)?);
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
+fn decode_block_row(
+    stream: &[u8],
+    block_origin_x: i32,
+    block_origin_y: i32,
+    block_width: u32,
+    row: usize,
+    canvas_width: u32,
+    canvas_height: u32,
+    rgba: &mut [u8],
+) -> Result<(), ParseError> {
+    let blocks = usize::try_from(block_width).map_err(|_| layer_error("lpix row is too wide"))?;
+    let row_i32 = i32::try_from(row).map_err(|_| layer_error("lpix row index is too large"))?;
+    let block_y = block_origin_y
+        .checked_add(row_i32)
+        .ok_or_else(|| layer_error("lpix block Y overflow"))?;
+    let mut block_x = 0_usize;
+    let mut offset = 0_usize;
+    while offset + 2 <= stream.len() {
+        let marker = u16::from_le_bytes(read(stream, offset)?);
         offset += 2;
         if marker & 0xff != 0xff {
             return Err(layer_error("invalid lpix block marker"));
         }
         let kind = (marker >> 12) as u8;
-        let index = usize::from((marker >> 8) & 0x0f);
+        let marker_x = u8::try_from((marker >> 8) & 0x0f)
+            .map_err(|_| layer_error("invalid lpix block X marker"))?;
+        let absolute_x = i64::from(block_origin_x)
+            .checked_add(i64::try_from(block_x).map_err(|_| layer_error("lpix block X overflow"))?)
+            .ok_or_else(|| layer_error("lpix block X overflow"))?;
+        let expected_x = u8::try_from(absolute_x.rem_euclid(16))
+            .map_err(|_| layer_error("invalid lpix block X checksum"))?;
+        if marker_x != expected_x {
+            return Err(layer_error("unexpected lpix block X checksum"));
+        }
+
         match kind {
             0x0 => {
-                let _skip = u16::from_le_bytes(read(tile, offset)?);
+                let skip = usize::from(u16::from_le_bytes(read(stream, offset)?)) + 1;
                 offset += 2;
+                block_x = block_x
+                    .checked_add(skip)
+                    .ok_or_else(|| layer_error("lpix transparent run overflow"))?;
+                if block_x > blocks {
+                    return Err(layer_error("lpix transparent run exceeds row width"));
+                }
             }
             0x5 => {
+                if block_x >= blocks {
+                    return Err(layer_error("lpix solid block exceeds row width"));
+                }
                 let mut color = [0_i32; CHANNELS];
                 for channel in &mut color {
-                    *channel = i32::from(u16::from_le_bytes(read(tile, offset)?));
+                    *channel = i32::from(u16::from_le_bytes(read(stream, offset)?)) & 0x3fff;
                     offset += 2;
                 }
-                if index == 0 {
-                    return Ok(Some([color; BLOCK_PIXELS]));
+                if block_intersects_canvas(
+                    absolute_x,
+                    i64::from(block_y),
+                    canvas_width,
+                    canvas_height,
+                ) {
+                    blit_block(
+                        &[color; BLOCK_PIXELS],
+                        absolute_x,
+                        i64::from(block_y),
+                        canvas_width,
+                        canvas_height,
+                        rgba,
+                    )?;
                 }
+                block_x += 1;
             }
             0xa => {
-                let size = usize::from(u16::from_le_bytes(read(tile, offset)?));
+                if block_x >= blocks {
+                    return Err(layer_error("lpix DPCM block exceeds row width"));
+                }
+                let size = usize::from(u16::from_le_bytes(read(stream, offset)?));
                 offset += 2;
                 let end = offset
                     .checked_add(size)
                     .ok_or_else(|| layer_error("lpix block overflow"))?;
-                let compressed = tile
+                let compressed = stream
                     .get(offset..end)
                     .ok_or_else(|| layer_error("truncated lpix block"))?;
-                if index == 0 {
-                    return decode_dpcm_block(compressed).map(Some);
+                if block_intersects_canvas(
+                    absolute_x,
+                    i64::from(block_y),
+                    canvas_width,
+                    canvas_height,
+                ) {
+                    let values = decode_dpcm_block(compressed)?;
+                    blit_block(
+                        &values,
+                        absolute_x,
+                        i64::from(block_y),
+                        canvas_width,
+                        canvas_height,
+                        rgba,
+                    )?;
                 }
                 offset = end;
+                block_x += 1;
             }
-            0xf => return Ok(None),
+            0xf => {
+                if block_x != blocks || offset != stream.len() {
+                    return Err(layer_error("lpix row ended at the wrong block"));
+                }
+                return Ok(());
+            }
             _ => return Err(layer_error("unsupported lpix block kind")),
         }
     }
-    Err(layer_error("lpix tile has no terminator"))
+    Err(layer_error("lpix row has no terminator"))
+}
+
+fn block_intersects_canvas(block_x: i64, block_y: i64, width: u32, height: u32) -> bool {
+    let left = block_x * BLOCK_SIZE_I64;
+    let top = block_y * BLOCK_SIZE_I64;
+    let right = left + BLOCK_SIZE_I64;
+    let bottom = top + BLOCK_SIZE_I64;
+    right > 0 && bottom > 0 && left < i64::from(width) && top < i64::from(height)
+}
+
+fn blit_block(
+    values: &[[i32; CHANNELS]; BLOCK_PIXELS],
+    block_x: i64,
+    block_y: i64,
+    canvas_width: u32,
+    canvas_height: u32,
+    rgba: &mut [u8],
+) -> Result<(), ParseError> {
+    let width = usize::try_from(canvas_width).map_err(|_| layer_error("invalid layer width"))?;
+    let left = block_x * BLOCK_SIZE_I64;
+    let top = block_y * BLOCK_SIZE_I64;
+    for y in 0..BLOCK_SIZE {
+        let canvas_y = top + i64::try_from(y).map_err(|_| layer_error("lpix pixel Y overflow"))?;
+        if canvas_y < 0 || canvas_y >= i64::from(canvas_height) {
+            continue;
+        }
+        for x in 0..BLOCK_SIZE {
+            let canvas_x =
+                left + i64::try_from(x).map_err(|_| layer_error("lpix pixel X overflow"))?;
+            if canvas_x < 0 || canvas_x >= i64::from(canvas_width) {
+                continue;
+            }
+            let pixel = values[y * BLOCK_SIZE + x];
+            let alpha = pixel[3];
+            let destination =
+                (usize::try_from(canvas_y).map_err(|_| layer_error("invalid pixel Y"))? * width
+                    + usize::try_from(canvas_x).map_err(|_| layer_error("invalid pixel X"))?)
+                    * CHANNELS;
+            rgba[destination..destination + CHANNELS].copy_from_slice(&[
+                unpremultiply(pixel[2], alpha),
+                unpremultiply(pixel[1], alpha),
+                unpremultiply(pixel[0], alpha),
+                scale_14_to_8(alpha),
+            ]);
+        }
+    }
+    Ok(())
 }
 
 fn decode_dpcm_block(compressed: &[u8]) -> Result<[[i32; CHANNELS]; BLOCK_PIXELS], ParseError> {
@@ -395,7 +554,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_large_layer_metadata_when_owned_fixture_is_available() {
+    fn decodes_large_offset_layer_when_owned_fixture_is_available() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/private/300x300-izunaface-white-background.sai2");
         let Ok(bytes) = std::fs::read(path) else {
@@ -405,7 +564,36 @@ mod tests {
             decode_layers(&bytes, DecodeLimits::default()).expect("layer metadata should parse");
         assert_eq!(layers.len(), 1);
         assert_eq!(layers[0].tile_count(), 32);
-        assert!(layers[0].image().is_none());
+        assert_eq!(layers[0].block_origin(), (-1, -4));
+        assert_eq!(layers[0].block_dimensions(), (22, 32));
+        let integrated = crate::decode_integrated_image(&bytes, DecodeLimits::default())
+            .expect("integrated image should decode");
+        let layer = layers[0].image().expect("large raster layer should decode");
+        let mut different = 0_usize;
+        let mut maximum_delta = 0_u8;
+        for (source, expected) in layer
+            .pixels()
+            .chunks_exact(4)
+            .zip(integrated.pixels().chunks_exact(4))
+        {
+            let alpha = u16::from(source[3]);
+            for channel in 0..3 {
+                let actual = u8::try_from(
+                    (u16::from(source[channel]) * alpha + 255 * (255 - alpha) + 127) / 255,
+                )
+                .unwrap();
+                let delta = actual.abs_diff(expected[channel]);
+                maximum_delta = maximum_delta.max(delta);
+                different += usize::from(delta != 0);
+            }
+        }
+        // The 14-bit premultiplied source must be quantized to 8-bit straight
+        // alpha for PSD. Re-compositing may therefore differ by one level.
+        assert!(
+            different < 4_000,
+            "too many differing channels: {different}"
+        );
+        assert!(maximum_delta <= 1, "maximum channel delta: {maximum_delta}");
     }
 
     fn synthetic_layer_document() -> Vec<u8> {
@@ -413,6 +601,7 @@ mod tests {
         layr[0..4].copy_from_slice(b"layr");
         layr[4..8].copy_from_slice(&2_u32.to_le_bytes());
         layr[16..20].copy_from_slice(b"norm");
+        layr[36..40].copy_from_slice(&1_u32.to_le_bytes());
         layr[40..44].copy_from_slice(&1_u32.to_le_bytes());
         layr[44..48].copy_from_slice(b"norm");
         layr[48..52].copy_from_slice(&100_u32.to_le_bytes());

@@ -101,10 +101,11 @@ Decoded results:
 ### Raster layers (`layr` / `lpix`)
 
 The fixed 56-byte portion of every observed `layr` chunk agrees with the public
-field ordering for layer ID, type, four unknown signed integers, an unknown
-integer, tile count, blend mode, opacity, and flags. The observed `name`
-parameter begins with a little-endian UTF-16 code-unit count followed by the
-UTF-16LE layer name.
+field ordering for layer ID, type, four signed integers, an integer, a row
+count, blend mode, opacity, and flags. In the tested raster layers, offsets 28
+and 32 are the signed X/Y origins of a 32 x 32 block grid, offset 36 is its
+width, and offset 40 is its height. The observed `name` parameter begins with a
+little-endian UTF-16 code-unit count followed by the UTF-16LE layer name.
 
 The two-layer 32 x 32 fixture has one outer `lpix` tile per layer. Each outer
 tile contains one compressed 32 x 32 pixel block:
@@ -120,11 +121,24 @@ channels are 14-bit premultiplied BGRA with `0x4000` as full intensity. The
 reader applies the two-dimensional predictor per 32-pixel row, converts to
 straight-alpha RGBA, and crops the block to the canvas.
 
-The 300 x 300 artwork has 32 outer `lpix` tiles and additionally exhibits
-compressed block markers `ff aN`, apparent uniform-color markers `ff 5N`, skip
-records `ff 0N`, and `ff fN` terminal records. Their complete tile-coordinate
-mapping is not established, so the reader currently retains this layer's
-metadata but deliberately does not emit guessed pixels.
+The 300 x 300 artwork uses a 22 x 32 block grid with origin (-1, -4). Its `lpix`
+body begins with `dpcm`, then one little-endian `uint32` stream length for each
+block row. Each row stream contains compressed block markers `ff aN`, apparent
+uniform-color markers `ff 5N`, transparent-run records `ff 0N`, and one `ff fN`
+terminal record. The `N` nibble is the absolute block X coordinate modulo 16.
+Transparent-run payloads are a little-endian `uint16` run length minus one.
+Compressed and uniform blocks advance X by one; the terminal is reached after
+the declared grid width. Blocks are positioned in canvas space using the
+signed grid origin and cropped at canvas edges.
+
+The reader decodes this sparse grid and its compressed raster blocks. When the
+resulting straight-alpha 8-bit layer is composited over white, 3,522 of 270,000
+RGB channel values differ from the saved integrated image, all by exactly one
+level. The saved 14-bit premultiplied channels cannot always be represented
+losslessly as 8-bit straight alpha. `sai2topsd` therefore also embeds the saved
+integrated image as the PSD composite, which matches the supplied reference PNG
+pixel-for-pixel. The `5N` uniform-block channel flag bits are only tentatively
+understood; more fixtures are needed before calling that variant fully verified.
 
 ## Assumed by the current implementation
 
@@ -158,8 +172,8 @@ metadata but deliberately does not emit guessed pixels.
   equal chunk offsets, nonzero high offset bits, or chunks not ordered by
   physical offset.
 - Semantics of chunk bodies beyond the limited prefixes listed above.
-- Complete placement rules for multi-tile and sparse `lpix` block grids, and
-  the exact semantics of the observed `0N`, `5N`, and terminal marker variants.
+- Exact flag-bit semantics of the observed `5N` uniform-block channel words,
+  and whether other `lpix` block-grid variants use the same placement rules.
 - Meanings of all canvas-background flag values beyond the two observed modes.
 - Whether other format tags change the DPCM predictor, channel order, bitstream,
   marker, or padding rules.

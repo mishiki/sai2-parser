@@ -33,17 +33,19 @@ the first tested slice of layered export:
 - writes standards-compliant RGBA PNG files with the `sai2-extract` CLI.
 - parses raster-layer IDs, names, types, blend modes, opacity, flags, and tile
   counts from `layr` chunks;
-- decodes the observed single-block `lpix` layout into straight-alpha RGBA;
+- decodes observed sparse, offset `lpix` block grids into straight-alpha RGBA;
 - writes those decoded layers, Unicode names, visibility, opacity, and basic
   blend modes to a PSD 1.0 file with the `sai2topsd` CLI.
 
-The decoder has been verified against three purpose-built 32 x 32, single-tile
-fixtures and a 300 x 300 four-tile artwork fixture with partial edge tiles. Its
-output matched the supplied 300 x 300 reference PNG pixel-for-pixel. The
-individual red and green raster layers in the 32 x 32 two-layer fixture decode
-successfully. Larger sparse `lpix` grids, folders, masks, vector linework,
-shapes, and text are not decoded yet; `sai2topsd` reports an error instead of
-silently flattening an unsupported document.
+The decoder has been verified against three purpose-built 32 x 32 fixtures and
+a 300 x 300 artwork fixture whose layer uses a sparse 22 x 32 block grid with a
+negative origin. The saved composite matched the supplied 300 x 300 reference
+PNG pixel-for-pixel, and its independently decoded raster layer recomposites
+within one 8-bit level (the expected straight-alpha quantization bound). The
+individual red and green raster layers in the 32 x 32 two-layer fixture also
+decode successfully. Folders, masks, vector linework, shapes, and text are not
+decoded yet; `sai2topsd` reports an error instead of silently flattening an
+unsupported document.
 
 ## Usage
 
