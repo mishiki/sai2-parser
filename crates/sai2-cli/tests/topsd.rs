@@ -64,7 +64,7 @@ fn converts_the_owned_folder_mask_and_vector_fixture_when_available() {
     assert!(!stdout.contains("structured non-raster layer(s)"));
     assert!(psd.windows(8).any(|window| window == b"8BIMlsct"));
     assert!(psd.windows(4).any(|window| window == b"pass"));
-    assert!(psd.windows(4).any(|window| window == b"idiv"));
+    assert!(psd.windows(4).any(|window| window == b"lddg"));
     assert!(psd.windows(4).any(|window| window == b"lite"));
     assert_eq!(
         psd.windows(8)

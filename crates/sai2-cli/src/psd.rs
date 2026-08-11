@@ -807,15 +807,46 @@ fn shape_fixed_point(coordinate: f64, dimension: u32) -> Result<i32, String> {
 }
 
 fn psd_blend_key(layer: &Sai2Layer) -> [u8; 4] {
-    match layer.blend_mode().as_bytes() {
+    psd_blend_key_for(layer.blend_mode().as_bytes())
+}
+
+fn psd_blend_key_for(mode: [u8; 4]) -> [u8; 4] {
+    match mode {
         value if value == *b"pass" => *b"pass",
+        value if value == *b"norm" => *b"norm",
         value if value == *b"mult" => *b"mul ",
-        value if value == *b"burn" => *b"idiv",
-        value if value == *b"litn" => *b"lite",
         value if value == *b"scrn" => *b"scrn",
         value if value == *b"over" => *b"over",
+        value if value == *b"sbad" => *b"lbrn", // Shade -> Linear Burn.
+        value if value == *b"burn" => *b"lddg", // Shine -> Linear Dodge (Add).
+        value if value == *b"ddge" => *b"lLit", // Shade/Shine -> Linear Light.
+        value if value == *b"bndg" => *b"idiv", // Burn -> Color Burn.
+        value if value == *b"ilit" => *b"div ", // Dodge -> Color Dodge.
+        value if value == *b"cdif" => *b"vLit", // Burn/Dodge -> Vivid Light.
+        value if value == *b"slit" => *b"sLit",
+        value if value == *b"hlit" => *b"hLit",
+        value if value == *b"plit" => *b"pLit", // SAI2 Vivid -> Pin Light (provisional).
+        value if value == *b"hmix" => *b"hMix",
         value if value == *b"dark" => *b"dark",
-        value if value == *b"lite" => *b"lite",
+        value if value == *b"litn" || value == *b"lite" => *b"lite",
+        value if value == *b"drkc" => *b"dkCl",
+        value if value == *b"litc" => *b"lgCl",
+        value if value == *b"diff" => *b"diff",
+        value if value == *b"excl" => *b"smud",
+        value if value == *b"fsub" || value == *b"sub " => *b"fsub",
+        value if value == *b"fdiv" => *b"fdiv",
+        value if value == *b"hue " => *b"hue ",
+        value if value == *b"sat " => *b"sat ",
+        value if value == *b"col " => *b"colr",
+        value if value == *b"lum " => *b"lum ",
+        // These compatibility keys are accepted by SAI2 even though its
+        // current layer-mode menu uses the aliases above.
+        value if value == *b"add " || value == *b"lddg" => *b"lddg",
+        value if value == *b"lbrn" => *b"lbrn",
+        value if value == *b"llit" => *b"lLit",
+        value if value == *b"cbrn" => *b"idiv",
+        value if value == *b"cddg" => *b"div ",
+        value if value == *b"vlit" => *b"vLit",
         _ => *b"norm",
     }
 }
@@ -1099,6 +1130,52 @@ mod tests {
             write_packbits_row(&mut encoded, &row).unwrap();
             assert_eq!(encoded.len(), packbits_row_len(&row));
         }
+    }
+
+    #[test]
+    fn maps_all_known_sai2_blend_keys_to_photoshop() {
+        let mappings = [
+            (*b"norm", *b"norm"),
+            (*b"pass", *b"pass"),
+            (*b"mult", *b"mul "),
+            (*b"scrn", *b"scrn"),
+            (*b"over", *b"over"),
+            (*b"sbad", *b"lbrn"),
+            (*b"burn", *b"lddg"),
+            (*b"ddge", *b"lLit"),
+            (*b"bndg", *b"idiv"),
+            (*b"ilit", *b"div "),
+            (*b"cdif", *b"vLit"),
+            (*b"slit", *b"sLit"),
+            (*b"hlit", *b"hLit"),
+            (*b"plit", *b"pLit"),
+            (*b"hmix", *b"hMix"),
+            (*b"dark", *b"dark"),
+            (*b"litn", *b"lite"),
+            (*b"drkc", *b"dkCl"),
+            (*b"litc", *b"lgCl"),
+            (*b"diff", *b"diff"),
+            (*b"excl", *b"smud"),
+            (*b"fsub", *b"fsub"),
+            (*b"fdiv", *b"fdiv"),
+            (*b"hue ", *b"hue "),
+            (*b"sat ", *b"sat "),
+            (*b"col ", *b"colr"),
+            (*b"lum ", *b"lum "),
+            (*b"sub ", *b"fsub"),
+            (*b"add ", *b"lddg"),
+            (*b"lbrn", *b"lbrn"),
+            (*b"lddg", *b"lddg"),
+            (*b"llit", *b"lLit"),
+            (*b"cbrn", *b"idiv"),
+            (*b"cddg", *b"div "),
+            (*b"vlit", *b"vLit"),
+        ];
+
+        for (sai2, photoshop) in mappings {
+            assert_eq!(psd_blend_key_for(sai2), photoshop, "SAI2 {sai2:?}");
+        }
+        assert_eq!(psd_blend_key_for(*b"????"), *b"norm");
     }
 
     #[test]
