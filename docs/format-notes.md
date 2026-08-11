@@ -243,11 +243,13 @@ to Color Burn (`idiv`), and the user-confirmed SAI2 mode 比較（明） stored 
 `litn` maps to Lighten (`lite`). These mappings are fixture-backed but are not
 a complete blend-mode table.
 
-The PSD writer rasterizes decoded linework to an independent pixel layer. Shape
-layers still receive transparent pixel channels while their typed geometry and
-exact source chunks are preserved. The PSD composite preview remains
-pixel-identical to SAI2's saved `intg`; native PSD vector-shape output remains
-open work.
+The PSD writer rasterizes decoded linework to an independent pixel layer. For
+the observed SAI2 shape tool, one closed opaque-fill path with three points is
+written as a triangle and one with four points as either an ellipse or a freely
+transformed quadrilateral. The writer emits Photoshop `SoCo` solid-color data
+and a `vmsk` editable vector mask, preserving the SAI2 Bezier controls and final
+transformed coordinates. Exact source chunks remain preserved in `s2ly`. The
+PSD composite preview remains pixel-identical to SAI2's saved `intg`.
 
 Layer and composite channel pixels are written with PSD PackBits/RLE
 compression. A 5870 x 4175 owned document with 32 layers would occupy 2.811 GiB
@@ -294,8 +296,9 @@ reduces the observed output to about 246 MiB without changing decoded pixels.
 - Semantics of unobserved `lmsk` flag combinations and mask block variants.
 - Linework stroke kinds, point flags, width-scale semantics, brush parameters,
   and rendering details beyond the one observed stroke.
-- Shape path and point flags, open paths, stroke parameters, and compound or
-  multiple-path fill rules.
+- Shape path and point flags beyond the observed closed three- and four-point
+  primitives, plus open paths, translucent fills, stroke parameters, and
+  compound or multiple-path fill rules.
 - Whether other format tags change the DPCM predictor, channel order, bitstream,
   marker, or padding rules.
 

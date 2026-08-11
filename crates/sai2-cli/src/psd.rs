@@ -1,10 +1,12 @@
 use std::io::Write;
 
-use sai2_core::{RgbaImage, Sai2Layer};
+use sai2_core::{RgbaImage, Sai2Layer, Sai2Shape};
 
 const CHANNEL_IDS: [i16; 4] = [0, 1, 2, -1];
 const SAI2_LAYER_DATA_KEY: &[u8; 4] = b"s2ly";
 const SAI2_LAYER_DATA_MAGIC: &[u8; 8] = b"SAI2LYR\0";
+const SOLID_COLOR_KEY: [u8; 4] = *b"SoCo";
+const VECTOR_MASK_KEY: [u8; 4] = *b"vmsk";
 const BACKGROUND_NAME: &str = "SAI2 Canvas Background";
 const DIVIDER_NAME: &str = "</Layer group>";
 
@@ -56,6 +58,9 @@ pub fn write_layered(
                 "layer {} mask dimensions do not match the canvas",
                 layer.id()
             ));
+        }
+        if layer.layer_type().as_bytes() == *b"shap" {
+            validate_native_shape(layer)?;
         }
     }
 
@@ -266,7 +271,12 @@ fn write_record(
             let opacity = u8::try_from((u16::from(layer.opacity()) * 255 + 50) / 100)
                 .map_err(|_| "PSD opacity overflow")?;
             let clipping = u8::from(layer.clipped_to_below());
-            let flags = u8::from(layer.alpha_locked()) | if layer.visible() { 0 } else { 2 };
+            let mut flags = u8::from(layer.alpha_locked()) | if layer.visible() { 0 } else { 2 };
+            if layer.shape().is_some() {
+                // Bits 3 and 4 declare that the latter is meaningful and that
+                // pixel channels do not define this live shape's appearance.
+                flags |= 0x18;
+            }
             output
                 .write_all(&[opacity, clipping, flags, 0])
                 .map_err(io_error)?;
@@ -276,6 +286,7 @@ fn write_record(
             write_pascal_name(output, &format!("Layer {}", layer.id()))?;
             write_unicode_name(output, layer.name())?;
             write_sai2_layer_data(output, layer, source)?;
+            write_native_shape_data(output, layer, width, height)?;
             if layer.is_folder() {
                 write_section_divider(output, 1, Some(psd_blend_key(layer)))?;
             }
@@ -418,6 +429,9 @@ fn layer_extra_len(layer: &Sai2Layer) -> Result<usize, String> {
     length = length
         .checked_add(sai2_layer_block_len(layer)?)
         .ok_or_else(|| "PSD layer extra data is too large".to_owned())?;
+    length = length
+        .checked_add(native_shape_blocks_len(layer)?)
+        .ok_or_else(|| "PSD shape layer data is too large".to_owned())?;
     if layer.is_folder() {
         length = length
             .checked_add(section_divider_block_len(true))
@@ -489,6 +503,30 @@ fn sai2_layer_block_len(layer: &Sai2Layer) -> Result<usize, String> {
     12_usize
         .checked_add(round_up(payload_len, 4))
         .ok_or_else(|| "embedded SAI2 layer block is too large".to_owned())
+}
+
+fn native_shape_blocks_len(layer: &Sai2Layer) -> Result<usize, String> {
+    let Some(shape) = layer.shape() else {
+        return Ok(0);
+    };
+    let solid_color = solid_color_payload(shape.fill_bgra14().ok_or_else(|| {
+        format!(
+            "shape layer {} ({}) has no fill color",
+            layer.id(),
+            layer.name()
+        )
+    })?)?;
+    let vector_mask_len = vector_mask_payload_len(shape)?;
+    additional_block_len(solid_color.len())?
+        .checked_add(additional_block_len(vector_mask_len)?)
+        .ok_or_else(|| "PSD shape blocks are too large".to_owned())
+}
+
+fn additional_block_len(payload_len: usize) -> Result<usize, String> {
+    checked_u32(payload_len)?;
+    12_usize
+        .checked_add(round_up(payload_len, 4))
+        .ok_or_else(|| "PSD additional layer block is too large".to_owned())
 }
 
 fn basic_layer_extra_len(pascal_name: &str, unicode_name: &str) -> Result<usize, String> {
@@ -580,6 +618,192 @@ fn write_sai2_layer_data(
         output.write_all(&[0]).map_err(io_error)?;
     }
     Ok(())
+}
+
+fn validate_native_shape(layer: &Sai2Layer) -> Result<(), String> {
+    let shape = layer.shape().ok_or_else(|| {
+        format!(
+            "shape layer {} ({}) has no decoded geometry",
+            layer.id(),
+            layer.name()
+        )
+    })?;
+    let color = shape.fill_bgra14().ok_or_else(|| {
+        format!(
+            "shape layer {} ({}) has no fill color",
+            layer.id(),
+            layer.name()
+        )
+    })?;
+    if color[3] != 0x4000 {
+        return Err(format!(
+            "shape layer {} ({}) has unsupported translucent fill",
+            layer.id(),
+            layer.name()
+        ));
+    }
+    if shape.paths().len() != 1 {
+        return Err(format!(
+            "shape layer {} ({}) must contain one SAI2 primitive path",
+            layer.id(),
+            layer.name()
+        ));
+    }
+    let points = shape.paths()[0].points().len();
+    if !matches!(points, 3 | 4) {
+        return Err(format!(
+            "shape layer {} ({}) has {points} points; expected a SAI2 triangle, quadrilateral, or ellipse",
+            layer.id(),
+            layer.name()
+        ));
+    }
+    Ok(())
+}
+
+fn write_native_shape_data(
+    output: &mut impl Write,
+    layer: &Sai2Layer,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    let Some(shape) = layer.shape() else {
+        return Ok(());
+    };
+    let color = shape
+        .fill_bgra14()
+        .ok_or_else(|| "decoded shape has no fill color".to_owned())?;
+    let solid_color = solid_color_payload(color)?;
+    write_additional_block(output, SOLID_COLOR_KEY, &solid_color)?;
+    let vector_mask = vector_mask_payload(shape, width, height)?;
+    write_additional_block(output, VECTOR_MASK_KEY, &vector_mask)
+}
+
+fn write_additional_block(
+    output: &mut impl Write,
+    key: [u8; 4],
+    payload: &[u8],
+) -> Result<(), String> {
+    output.write_all(b"8BIM").map_err(io_error)?;
+    output.write_all(&key).map_err(io_error)?;
+    write_u32(output, checked_u32(payload.len())?)?;
+    output.write_all(payload).map_err(io_error)?;
+    for _ in payload.len()..round_up(payload.len(), 4) {
+        output.write_all(&[0]).map_err(io_error)?;
+    }
+    Ok(())
+}
+
+fn solid_color_payload(color_bgra14: [u16; 4]) -> Result<Vec<u8>, String> {
+    let mut output = Vec::new();
+    write_u32(&mut output, 16)?; // Descriptor block version.
+    write_u32(&mut output, 0)?; // Empty descriptor name.
+    write_descriptor_id(&mut output, b"solidColorLayer")?;
+    write_u32(&mut output, 1)?;
+    write_descriptor_id(&mut output, b"Clr ")?;
+    output.write_all(b"Objc").map_err(io_error)?;
+    write_u32(&mut output, 0)?; // Empty nested descriptor name.
+    write_descriptor_id(&mut output, b"RGBC")?;
+    write_u32(&mut output, 3)?;
+    for (key, channel) in [
+        (b"Rd  ".as_slice(), color_bgra14[2]),
+        (b"Grn ".as_slice(), color_bgra14[1]),
+        (b"Bl  ".as_slice(), color_bgra14[0]),
+    ] {
+        write_descriptor_id(&mut output, key)?;
+        output.write_all(b"doub").map_err(io_error)?;
+        let value = f64::from(channel.min(0x4000)) * 255.0 / 16384.0;
+        output.write_all(&value.to_be_bytes()).map_err(io_error)?;
+    }
+    while output.len() % 4 != 0 {
+        output.push(0);
+    }
+    Ok(output)
+}
+
+fn write_descriptor_id(output: &mut impl Write, id: &[u8]) -> Result<(), String> {
+    if id.len() == 4 {
+        write_u32(output, 0)?;
+    } else {
+        write_u32(output, checked_u32(id.len())?)?;
+    }
+    output.write_all(id).map_err(io_error)
+}
+
+fn vector_mask_payload_len(shape: &Sai2Shape) -> Result<usize, String> {
+    shape
+        .paths()
+        .iter()
+        .try_fold(8_usize + 26 + 26, |length, path| {
+            path.points()
+                .len()
+                .checked_add(1)
+                .and_then(|records| records.checked_mul(26))
+                .and_then(|path_len| length.checked_add(path_len))
+                .ok_or_else(|| "PSD vector mask is too large".to_owned())
+        })
+}
+
+fn vector_mask_payload(shape: &Sai2Shape, width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let mut output = Vec::with_capacity(vector_mask_payload_len(shape)?);
+    write_u32(&mut output, 3)?;
+    write_u32(&mut output, 0)?;
+
+    write_u16(&mut output, 6)?; // Path fill rule.
+    output.extend_from_slice(&[0; 24]);
+    write_u16(&mut output, 8)?; // Initial fill rule: empty background.
+    write_u16(&mut output, 0)?;
+    output.extend_from_slice(&[0; 22]);
+
+    for path in shape.paths() {
+        write_u16(&mut output, 0)?; // Closed subpath length record.
+        write_u16(
+            &mut output,
+            u16::try_from(path.points().len()).map_err(|_| "too many PSD shape points")?,
+        )?;
+        write_i16(&mut output, 1)?; // Union/combine operation.
+        write_u16(&mut output, 1)?;
+        write_u32(&mut output, 0)?;
+        write_u32(&mut output, 0)?;
+        output.extend_from_slice(&[0; 10]);
+
+        for point in path.points() {
+            let linked = points_differ(point.control_before(), point.position())
+                || points_differ(point.control_after(), point.position());
+            write_u16(&mut output, if linked { 1 } else { 2 })?;
+            for coordinate in [
+                point.control_before(),
+                point.position(),
+                point.control_after(),
+            ] {
+                write_i32(
+                    &mut output,
+                    shape_fixed_point(path.origin()[1] + coordinate[1], height)?,
+                )?;
+                write_i32(
+                    &mut output,
+                    shape_fixed_point(path.origin()[0] + coordinate[0], width)?,
+                )?;
+            }
+        }
+    }
+    debug_assert_eq!(output.len(), vector_mask_payload_len(shape)?);
+    Ok(output)
+}
+
+fn points_differ(first: [f64; 2], second: [f64; 2]) -> bool {
+    first
+        .into_iter()
+        .zip(second)
+        .any(|(left, right)| (left - right).abs() > f64::EPSILON)
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn shape_fixed_point(coordinate: f64, dimension: u32) -> Result<i32, String> {
+    let scaled = coordinate / f64::from(dimension) * 16_777_216.0;
+    if scaled < f64::from(i32::MIN) || scaled > f64::from(i32::MAX) {
+        return Err("PSD shape coordinate exceeds 8.24 fixed-point range".to_owned());
+    }
+    Ok(scaled as i32)
 }
 
 fn psd_blend_key(layer: &Sai2Layer) -> [u8; 4] {

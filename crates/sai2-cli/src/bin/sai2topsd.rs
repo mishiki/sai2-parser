@@ -58,7 +58,7 @@ fn run() -> Result<(), String> {
     );
     let placeholder_count = layers
         .iter()
-        .filter(|layer| !layer.is_folder() && layer.image().is_none())
+        .filter(|layer| !layer.is_folder() && layer.image().is_none() && layer.shape().is_none())
         .count();
     if placeholder_count != 0 {
         println!(
