@@ -3,3 +3,4 @@
 *.png
 !docs/**/*.png
 !fixtures/**/*.png
+/fixtures/private/

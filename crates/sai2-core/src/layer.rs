@@ -94,6 +94,9 @@ pub struct Sai2Stroke {
     id: u32,
     origin: [f64; 2],
     kind: u32,
+    color_bgra14: Option<[u16; 4]>,
+    brush_size: Option<f32>,
+    ink_opacity: Option<f32>,
     points: Vec<Sai2StrokePoint>,
 }
 
@@ -109,6 +112,19 @@ impl Sai2Stroke {
     #[must_use]
     pub const fn kind(&self) -> u32 {
         self.kind
+    }
+    #[must_use]
+    pub const fn color_bgra14(&self) -> Option<[u16; 4]> {
+        self.color_bgra14
+    }
+    #[must_use]
+    pub const fn brush_size(&self) -> Option<f32> {
+        self.brush_size
+    }
+    /// Returns the observed ink opacity multiplier from the stroke settings.
+    #[must_use]
+    pub const fn ink_opacity(&self) -> Option<f32> {
+        self.ink_opacity
     }
     #[must_use]
     pub fn points(&self) -> &[Sai2StrokePoint] {
@@ -423,6 +439,13 @@ pub fn decode_layers(input: &[u8], limits: DecodeLimits) -> Result<Vec<Sai2Layer
             // Vector metadata is best-effort: the exact source chunk remains
             // preserved even when a future linework variant is not understood.
             layer.linework = decode_linework(chunk_body(input, data_chunk)?).ok();
+            if let Some(linework) = &layer.linework {
+                layer.image = Some(rasterize_linework(
+                    linework,
+                    header.width(),
+                    header.height(),
+                )?);
+            }
         }
         if layer.layer_type == FourCc::from_bytes(*b"shap")
             && let Some(data_chunk) = layer
@@ -568,6 +591,9 @@ fn decode_stroke_container(value: &[u8], result: &mut Sai2Linework) -> Result<()
         return Err(layer_error("truncated linework stroke container"));
     }
     let mut offset = 8_usize;
+    let mut color_bgra14 = None;
+    let mut brush_size = None;
+    let mut ink_opacity = None;
     loop {
         let tag = read::<4>(value, offset)?;
         if tag == [0; 4] {
@@ -584,13 +610,24 @@ fn decode_stroke_container(value: &[u8], result: &mut Sai2Linework) -> Result<()
             .get(start..end)
             .ok_or_else(|| layer_error("truncated linework parameter"))?;
         match tag {
-            value if value == *b"scol" => result.color_bgra14 = Some(decode_color14(parameter)?),
+            value if value == *b"scol" => {
+                color_bgra14 = Some(decode_color14(parameter)?);
+                result.color_bgra14 = color_bgra14;
+            }
             value if value == *b"inkd" && parameter.len() >= 4 => {
                 let size = f32::from_le_bytes(read(parameter, 0)?);
                 if !size.is_finite() {
                     return Err(layer_error("non-finite linework brush size"));
                 }
-                result.brush_size = Some(size);
+                brush_size = Some(size);
+                result.brush_size = brush_size;
+                if parameter.len() >= 16 {
+                    let opacity = read_f32(parameter, 12)?;
+                    if !opacity.is_finite() {
+                        return Err(layer_error("non-finite linework ink opacity"));
+                    }
+                    ink_opacity = Some(opacity.clamp(0.0, 1.0));
+                }
             }
             _ => {}
         }
@@ -645,9 +682,151 @@ fn decode_stroke_container(value: &[u8], result: &mut Sai2Linework) -> Result<()
         id,
         origin,
         kind,
+        color_bgra14,
+        brush_size,
+        ink_opacity,
         points,
     });
     Ok(())
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn rasterize_linework(
+    linework: &Sai2Linework,
+    width: u32,
+    height: u32,
+) -> Result<RgbaImage, ParseError> {
+    let mut pixels = vec![0_u8; image_len(width, height)?];
+    for stroke in &linework.strokes {
+        let Some(brush_size) = stroke.brush_size.filter(|size| *size > 0.0) else {
+            continue;
+        };
+        let mut color = color14_to_rgba(stroke.color_bgra14.unwrap_or([0, 0, 0, 0x4000]));
+        if let Some(opacity) = stroke.ink_opacity {
+            color[3] = (f32::from(color[3]) * opacity).round() as u8;
+        }
+        let points = &stroke.points;
+        if points.len() == 1 {
+            let point = &points[0];
+            let radius = stroke_radius(brush_size, point);
+            draw_linework_disc(
+                &mut pixels,
+                width,
+                height,
+                absolute_point(stroke.origin, point.position),
+                radius,
+                color,
+            );
+        }
+        for pair in points.windows(2) {
+            let first = &pair[0];
+            let second = &pair[1];
+            let curve = [
+                absolute_point(stroke.origin, first.position),
+                absolute_point(stroke.origin, first.control_after),
+                absolute_point(stroke.origin, second.control_before),
+                absolute_point(stroke.origin, second.position),
+            ];
+            let control_length = distance(curve[0], curve[1])
+                + distance(curve[1], curve[2])
+                + distance(curve[2], curve[3]);
+            let steps = ((control_length / 0.35).ceil() as usize).clamp(1, 16_384);
+            for step in 0..=steps {
+                let t = step as f64 / steps as f64;
+                let point = cubic_point(curve, t);
+                let radius = f64::from(stroke_radius(brush_size, first))
+                    .mul_add(1.0 - t, f64::from(stroke_radius(brush_size, second)) * t)
+                    as f32;
+                draw_linework_disc(&mut pixels, width, height, point, radius, color);
+            }
+        }
+    }
+    Ok(RgbaImage::from_pixels(width, height, pixels))
+}
+
+fn stroke_radius(brush_size: f32, point: &Sai2StrokePoint) -> f32 {
+    (brush_size * point.pressure.max(0.0) * point.width_scale.max(0.0) * 0.5).max(0.0)
+}
+
+fn absolute_point(origin: [f64; 2], point: [f64; 2]) -> [f64; 2] {
+    [origin[0] + point[0], origin[1] + point[1]]
+}
+
+fn distance(first: [f64; 2], second: [f64; 2]) -> f64 {
+    (second[0] - first[0]).hypot(second[1] - first[1])
+}
+
+fn cubic_point(points: [[f64; 2]; 4], t: f64) -> [f64; 2] {
+    let u = 1.0 - t;
+    let weights = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+    [
+        points[0][0] * weights[0]
+            + points[1][0] * weights[1]
+            + points[2][0] * weights[2]
+            + points[3][0] * weights[3],
+        points[0][1] * weights[0]
+            + points[1][1] * weights[1]
+            + points[2][1] * weights[2]
+            + points[3][1] * weights[3],
+    ]
+}
+
+fn color14_to_rgba(color: [u16; 4]) -> [u8; 4] {
+    let convert = |value: u16| -> u8 {
+        u8::try_from((u32::from(value.min(0x4000)) * 255 + 0x2000) / 0x4000)
+            .expect("14-bit color conversion always fits")
+    };
+    [
+        convert(color[2]),
+        convert(color[1]),
+        convert(color[0]),
+        convert(color[3]),
+    ]
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn draw_linework_disc(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    center: [f64; 2],
+    radius: f32,
+    color: [u8; 4],
+) {
+    let radius = f64::from(radius);
+    // SAI2 linework uses a soft circular sampling profile even for the pen
+    // tool. The observed fringe extends a little beyond the nominal radius;
+    // applying coverage across that full support closely matches its export.
+    let edge = radius + 0.65;
+    let min_x = ((center[0] - edge).floor() as i64).clamp(0, i64::from(width));
+    let max_x = ((center[0] + edge).ceil() as i64).clamp(0, i64::from(width));
+    let min_y = ((center[1] - edge).floor() as i64).clamp(0, i64::from(height));
+    let max_y = ((center[1] + edge).ceil() as i64).clamp(0, i64::from(height));
+    for y in min_y..max_y {
+        for x in min_x..max_x {
+            let pixel_center = [x as f64 + 0.5, y as f64 + 0.5];
+            let normalized = ((edge - distance(center, pixel_center)) / edge).clamp(0.0, 1.0);
+            let profile = (normalized / 0.85).clamp(0.0, 1.0);
+            let coverage = profile * profile * (3.0 - 2.0 * profile);
+            let alpha = (coverage * f64::from(color[3])).round() as u8;
+            let index = (usize::try_from(y).expect("non-negative y")
+                * usize::try_from(width).expect("u32 width fits usize")
+                + usize::try_from(x).expect("non-negative x"))
+                * CHANNELS;
+            if alpha > pixels[index + 3] {
+                pixels[index..index + 3].copy_from_slice(&color[..3]);
+                pixels[index + 3] = alpha;
+            }
+        }
+    }
 }
 
 fn decode_shape(body: &[u8]) -> Result<Sai2Shape, ParseError> {
@@ -1350,6 +1529,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn decodes_owned_folder_and_mask_fixture_when_available() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
             "../../fixtures/private/izunaface-multipleLayersInFolder-maskWithBitmapLayer-singleLineVector-shapeLayer.sai2",
@@ -1376,7 +1556,7 @@ mod tests {
             [0, 1, 1, 1, 1, 0]
         );
         assert!(layers[0].image().is_none());
-        assert!(layers[1].image().is_none());
+        assert!(layers[1].image().is_some());
         assert!(layers[2].image().is_some());
         assert!(layers[3].image().is_some());
         assert!(layers[4].image().is_none());
@@ -1417,6 +1597,9 @@ mod tests {
         assert_eq!(linework.strokes().len(), 1);
         let stroke = &linework.strokes()[0];
         assert_eq!(stroke.id(), 1);
+        assert_eq!(stroke.color_bgra14(), linework.color_bgra14());
+        assert_eq!(stroke.brush_size(), linework.brush_size());
+        assert_eq!(stroke.ink_opacity(), Some(0.95));
         assert_eq!(stroke.kind(), 2);
         assert_eq!(stroke.points().len(), 13);
         assert_eq!(
@@ -1454,6 +1637,46 @@ mod tests {
         assert_eq!(
             absolute,
             [[18.0, 20.0], [286.0, 20.0], [286.0, 288.0], [18.0, 288.0]]
+        );
+    }
+
+    #[test]
+    fn rasterizes_owned_production_linework_fixture_when_available() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/private/ランドセル主線.sai2");
+        let Ok(bytes) = std::fs::read(path) else {
+            return;
+        };
+
+        let layers = decode_layers(&bytes, DecodeLimits::default()).unwrap();
+        let linework = layers[0].linework().expect("linework should decode");
+        assert_eq!(linework.strokes().len(), 343);
+        assert_eq!(
+            linework
+                .strokes()
+                .iter()
+                .map(|stroke| stroke.points().len())
+                .sum::<usize>(),
+            2018
+        );
+        assert!(
+            linework
+                .strokes()
+                .iter()
+                .all(|stroke| stroke.ink_opacity() == Some(0.95))
+        );
+        let pixels = layers[0]
+            .image()
+            .expect("linework should rasterize")
+            .pixels();
+        let nontransparent = pixels
+            .chunks_exact(CHANNELS)
+            .filter(|pixel| pixel[3] != 0)
+            .count();
+        assert!((600_000..650_000).contains(&nontransparent));
+        assert_eq!(
+            pixels.chunks_exact(CHANNELS).map(|pixel| pixel[3]).max(),
+            Some(242)
         );
     }
 

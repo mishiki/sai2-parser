@@ -61,7 +61,7 @@ fn converts_the_owned_folder_mask_and_vector_fixture_when_available() {
 
     assert!(command.status.success());
     let stdout = String::from_utf8(command.stdout).expect("CLI output should be UTF-8");
-    assert!(stdout.contains("Preserved 2 structured non-raster layer(s)"));
+    assert!(stdout.contains("Preserved 1 structured non-raster layer(s)"));
     assert!(psd.windows(8).any(|window| window == b"8BIMlsct"));
     assert!(psd.windows(4).any(|window| window == b"pass"));
     assert!(psd.windows(4).any(|window| window == b"idiv"));

@@ -213,6 +213,15 @@ which made the two interpretations accidentally indistinguishable. Unknown
 stroke footers remain bounded by the enclosing record and are preserved in
 `s2ly`.
 
+A 5870 x 4175 production fixture contains 343 strokes and 2018 points in one
+visible linework layer. It confirms that `scol`, brush size, and the observed
+ink-opacity field belong to each `strk` container rather than the whole layer.
+The renderer evaluates each cubic segment from the outgoing control of one
+point to the incoming control of the next, interpolates pressure and width
+scale, and applies the observed soft pen profile. Its nontransparent support
+and total alpha closely match the SAI2-exported reference PNG, while the source
+Bezier data remains preserved in `s2ly`.
+
 The fixture's `shap` body contains a 14-bit BGRA fill color and one path. The
 path stores a double-precision origin and four point records using the same
 position/control-point layout, followed by flags. Adding the origin to the
@@ -224,12 +233,11 @@ to Color Burn (`idiv`), and the user-confirmed SAI2 mode 比較（明） stored 
 `litn` maps to Lighten (`lite`). These mappings are fixture-backed but are not
 a complete blend-mode table.
 
-The PSD writer currently gives decoded linework and shape layers transparent
-pixel channels while preserving their typed geometry and exact source chunks.
-The PSD composite preview is therefore pixel-identical to SAI2's saved `intg`,
-but recompositing only editable PSD layers omits those two appearances.
-Accurate pressure-sensitive linework rasterization and native PSD vector-shape
-output remain open work.
+The PSD writer rasterizes decoded linework to an independent pixel layer. Shape
+layers still receive transparent pixel channels while their typed geometry and
+exact source chunks are preserved. The PSD composite preview remains
+pixel-identical to SAI2's saved `intg`; native PSD vector-shape output remains
+open work.
 
 Layer and composite channel pixels are written with PSD PackBits/RLE
 compression. A 5870 x 4175 owned document with 32 layers would occupy 2.811 GiB

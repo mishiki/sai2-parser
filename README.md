@@ -44,6 +44,8 @@ the first tested slice of layered export:
   channels;
 - exposes observed linework Bezier controls, pressure, width scale, brush size,
   and color as typed Rust data;
+- rasterizes decoded pressure-sensitive linework into independent RGBA PSD
+  layers while retaining the original editable vector payload in `s2ly`;
 - exposes observed shape paths, Bezier controls, and fill color as typed Rust
   data;
 - reverses SAI2's top-to-bottom layer records into PSD compositing order and,
@@ -53,15 +55,17 @@ the first tested slice of layered export:
   `s2ly` tagged block, retaining still-unknown vector, text, mask, and other
   layer payloads bit-for-bit for future decoders.
 
-The decoder has been verified against three purpose-built 32 x 32 fixtures and
-two 300 x 300 artwork fixtures. The newer complex fixture contains a
+The decoder has been verified against three purpose-built 32 x 32 fixtures,
+two 300 x 300 artwork fixtures, and a 5870 x 4175 production linework file.
+The newer complex fixture contains a
 pass-through folder, three raster layers, a grayscale layer mask, a
 pressure-sensitive linework stroke, a shape path, and several blend modes. Its
 saved composite matches the supplied reference pixel-for-pixel. Folder
 structure, the mask, and blend modes are represented natively in the PSD.
-Linework and shape geometry are decoded and preserved, but are currently
-exported as transparent PSD pixel placeholders: rasterizing them and emitting
-native PSD vector objects remain future work. Text layers are not decoded yet.
+Linework and shape geometry are decoded and preserved. Linework is additionally
+rasterized into its own PSD pixel layer; shape layers remain transparent PSD
+placeholders. Native PSD vector objects remain future work. Text layers are not
+decoded yet.
 
 ## Usage
 
@@ -97,8 +101,8 @@ two levels. Its original integrated image remains embedded pixel-for-pixel as
 the PSD composite preview. Transparent SAI2 canvases do not receive the
 synthetic white background layer.
 
-For unsupported rendered layer types such as the currently decoded linework
-and shape layers, `sai2topsd` prints an explicit placeholder notice. The PSD's
+For unsupported rendered layer types such as the currently decoded shape
+layers, `sai2topsd` prints an explicit placeholder notice. The PSD's
 saved composite preview is still the exact SAI2 `intg` image, while those
 individual PSD layers are transparent until a renderer is implemented.
 
