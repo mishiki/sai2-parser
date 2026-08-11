@@ -353,6 +353,18 @@ impl Sai2Layer {
         self.flags & 0x0001_0000 != 0
     }
 
+    /// Reports whether SAI2 clips this layer to the non-clipped layer below it.
+    #[must_use]
+    pub const fn clipped_to_below(&self) -> bool {
+        self.flags & 0x0100_0000 != 0
+    }
+
+    /// Reports whether SAI2 protects this layer's transparent pixels.
+    #[must_use]
+    pub const fn alpha_locked(&self) -> bool {
+        self.flags & 0x0000_0100 != 0
+    }
+
     /// Returns the observed folder nesting level stored in the low flag byte.
     #[must_use]
     pub const fn nesting_level(&self) -> u8 {
@@ -1428,14 +1440,26 @@ mod tests {
         assert!(linework[3].strokes().len() > 100);
         assert_eq!(linework[4].strokes().len(), 4);
 
-        let clipped = document
+        let alpha_locked = document
             .chunks()
             .iter()
             .find(|chunk| chunk.kind().as_bytes() == *b"layr" && chunk.object_id() == 51)
-            .expect("fixture should contain clipped layer 51");
+            .expect("fixture should contain alpha-locked layer 51");
+        let alpha_locked = parse_layer(chunk_body(&bytes, alpha_locked).unwrap()).unwrap();
+        assert_eq!(alpha_locked.flags(), 0x0001_0102);
+        assert_eq!(alpha_locked.nesting_level(), 2);
+        assert!(alpha_locked.alpha_locked());
+        assert!(!alpha_locked.clipped_to_below());
+
+        let clipped = document
+            .chunks()
+            .iter()
+            .find(|chunk| chunk.kind().as_bytes() == *b"layr" && chunk.object_id() == 54)
+            .expect("fixture should contain clipped layer 54");
         let clipped = parse_layer(chunk_body(&bytes, clipped).unwrap()).unwrap();
-        assert_eq!(clipped.flags(), 0x0001_0102);
-        assert_eq!(clipped.nesting_level(), 2);
+        assert_eq!(clipped.flags(), 0x0101_0002);
+        assert!(clipped.clipped_to_below());
+        assert!(!clipped.alpha_locked());
     }
 
     #[test]

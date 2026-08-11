@@ -189,6 +189,13 @@ and high flag bits `0x40010000`. `sai2topsd` maps the hierarchy to PSD `lsct`
 records (type 1 for the folder and type 3 for its bounding divider) and retains
 pass-through mode.
 
+The production fixture distinguishes two layer bits that were initially
+confused: `0x01000000` marks every layer clipped to the next non-clipped layer
+below it, while `0x00000100` protects transparent pixels on the current layer.
+PSD represents these independently as the layer-record clipping byte and bit 0
+of the layer flags. This preserves clipping chains containing multiple raster
+and linework layers above one base layer.
+
 The masked layer's `layr` parameter `lmsk` is 24 bytes. In this fixture it
 contains mask object ID 12, block origin `(0, 0)`, a 10 x 10 block grid, and
 four trailing flag bytes `[1, 1, 1, 0]`. The matching `mpix` chunk is a
@@ -282,9 +289,8 @@ reduces the observed output to about 246 MiB without changing decoded pixels.
 - Whether other `5N` or `lpix` block-grid variants add flags to the observed
   channel words or use different placement rules.
 - Meanings of all canvas-background flag values beyond the two observed modes.
-- Folder flag meanings beyond the observed nesting-depth low byte and the
-  `0x40000000` bit on one `fold` layer. The observed `0x00000100` flag marks a
-  layer clipped to the one below it and maps to PSD's clipping byte.
+- Layer flag meanings beyond the observed nesting-depth, visibility, folder,
+  clipping, and transparent-pixel-protection bits.
 - Semantics of unobserved `lmsk` flag combinations and mask block variants.
 - Linework stroke kinds, point flags, width-scale semantics, brush parameters,
   and rendering details beyond the one observed stroke.

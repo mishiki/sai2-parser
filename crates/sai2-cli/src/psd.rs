@@ -265,8 +265,8 @@ fn write_record(
             output.write_all(&psd_blend_key(layer)).map_err(io_error)?;
             let opacity = u8::try_from((u16::from(layer.opacity()) * 255 + 50) / 100)
                 .map_err(|_| "PSD opacity overflow")?;
-            let clipping = u8::from(layer.flags() & 0x0000_0100 != 0);
-            let flags = if layer.visible() { 0 } else { 2 };
+            let clipping = u8::from(layer.clipped_to_below());
+            let flags = u8::from(layer.alpha_locked()) | if layer.visible() { 0 } else { 2 };
             output
                 .write_all(&[opacity, clipping, flags, 0])
                 .map_err(io_error)?;
@@ -966,6 +966,23 @@ mod tests {
     }
 
     #[test]
+    fn maps_sai2_clipping_and_alpha_lock_to_distinct_psd_fields() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/private/32x32-redball-greenball-multiple-layer.sai2");
+        let Ok(input) = std::fs::read(path) else {
+            return;
+        };
+
+        let alpha_locked = psd_layer_record_flags(&input, 0x0000_0100);
+        assert_eq!(alpha_locked.0, 0, "alpha lock must not enable clipping");
+        assert_eq!(alpha_locked.1 & 1, 1, "PSD transparency must be protected");
+
+        let clipped = psd_layer_record_flags(&input, 0x0100_0000);
+        assert_eq!(clipped.0, 1, "PSD clipping byte must be enabled");
+        assert_eq!(clipped.1 & 1, 0, "clipping must not protect transparency");
+    }
+
+    #[test]
     fn omits_the_synthetic_background_for_a_transparent_canvas() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/private/32x32-blank-transparent-background.sai2");
@@ -1029,6 +1046,33 @@ mod tests {
             cursor += source_len;
         }
         assert_eq!(cursor, payload.len());
+    }
+
+    fn psd_layer_record_flags(input: &[u8], extra_flags: u32) -> (u8, u8) {
+        let mut input = input.to_vec();
+        let document = Sai2Document::parse(&input).unwrap();
+        let layer_offset = usize::try_from(
+            document
+                .chunks()
+                .iter()
+                .find(|chunk| chunk.kind() == FourCc::from_bytes(*b"layr"))
+                .unwrap()
+                .offset(),
+        )
+        .unwrap();
+        let flags_offset = layer_offset + 52;
+        let flags = u32::from_le_bytes(input[flags_offset..flags_offset + 4].try_into().unwrap());
+        input[flags_offset..flags_offset + 4].copy_from_slice(&(flags | extra_flags).to_le_bytes());
+
+        let composite = decode_integrated_image(&input, DecodeLimits::default()).unwrap();
+        let layers = decode_layers(&input, DecodeLimits::default()).unwrap();
+        let mut psd = Vec::new();
+        write_layered(&mut psd, 32, 32, &layers, &composite, &input, true).unwrap();
+        let record = psd
+            .windows(8)
+            .position(|window| window == b"8BIMmul ")
+            .unwrap();
+        (psd[record + 9], psd[record + 10])
     }
 
     fn decode_packbits_test_row(encoded: &[u8]) -> Vec<u8> {

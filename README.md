@@ -40,6 +40,8 @@ the first tested slice of layered export:
   do not expand unnecessarily toward PSD's 2 GB file-size limit;
 - decodes observed folder depth and pass-through mode and writes native PSD
   section-divider records;
+- maps observed SAI2 clipping groups and transparent-pixel protection to PSD's
+  clipping byte and transparency-protected flag;
 - decodes observed grayscale `mpix` layer masks and writes native PSD user-mask
   channels;
 - exposes observed linework Bezier controls, pressure, width scale, brush size,
