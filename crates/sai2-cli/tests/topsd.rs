@@ -128,7 +128,7 @@ fn converts_the_owned_shape_primitives_to_native_psd_shapes_when_available() {
 }
 
 #[test]
-fn maps_the_owned_sai2_burn_fixture_like_sai2s_psd_export_when_available() {
+fn maps_the_owned_linework_blend_mode_like_sai2s_psd_export_when_available() {
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/private/vectorline-burn.sai2");
     let reference = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -155,6 +155,12 @@ fn maps_the_owned_sai2_burn_fixture_like_sai2s_psd_export_when_available() {
     let _ = fs::remove_file(output);
 
     assert!(command.status.success());
-    assert!(psd.windows(4).any(|window| window == b"idiv"));
-    assert!(reference_psd.windows(4).any(|window| window == b"idiv"));
+    let expected = if reference_psd.windows(4).any(|window| window == b"idiv") {
+        b"idiv"
+    } else if reference_psd.windows(4).any(|window| window == b"mul ") {
+        b"mul "
+    } else {
+        panic!("reference PSD should contain the linework layer's blend key");
+    };
+    assert!(psd.windows(4).any(|window| window == expected));
 }

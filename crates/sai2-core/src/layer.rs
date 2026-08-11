@@ -96,6 +96,7 @@ pub struct Sai2Stroke {
     kind: u32,
     color_bgra14: Option<[u16; 4]>,
     brush_size: Option<f32>,
+    brush_density: Option<f32>,
     ink_opacity: Option<f32>,
     points: Vec<Sai2StrokePoint>,
 }
@@ -120,6 +121,11 @@ impl Sai2Stroke {
     #[must_use]
     pub const fn brush_size(&self) -> Option<f32> {
         self.brush_size
+    }
+    /// Returns the brush-density multiplier stored in the stroke's `inkd` record.
+    #[must_use]
+    pub const fn brush_density(&self) -> Option<f32> {
+        self.brush_density
     }
     /// Returns the observed ink opacity multiplier from the stroke settings.
     #[must_use]
@@ -598,6 +604,7 @@ fn decode_linework(body: &[u8]) -> Result<Sai2Linework, ParseError> {
     Err(layer_error("linework chunk has no terminator"))
 }
 
+#[allow(clippy::too_many_lines)]
 fn decode_stroke_container(value: &[u8], result: &mut Sai2Linework) -> Result<(), ParseError> {
     if value.len() < 16 {
         return Err(layer_error("truncated linework stroke container"));
@@ -605,6 +612,7 @@ fn decode_stroke_container(value: &[u8], result: &mut Sai2Linework) -> Result<()
     let mut offset = 8_usize;
     let mut color_bgra14 = None;
     let mut brush_size = None;
+    let mut brush_density = None;
     let mut ink_opacity = None;
     loop {
         let tag = read::<4>(value, offset)?;
@@ -633,6 +641,13 @@ fn decode_stroke_container(value: &[u8], result: &mut Sai2Linework) -> Result<()
                 }
                 brush_size = Some(size);
                 result.brush_size = brush_size;
+                if parameter.len() >= 8 {
+                    let density = read_f32(parameter, 4)?;
+                    if !density.is_finite() {
+                        return Err(layer_error("non-finite linework brush density"));
+                    }
+                    brush_density = Some(density.clamp(0.0, 1.0));
+                }
                 if parameter.len() >= 16 {
                     let opacity = read_f32(parameter, 12)?;
                     if !opacity.is_finite() {
@@ -696,6 +711,7 @@ fn decode_stroke_container(value: &[u8], result: &mut Sai2Linework) -> Result<()
         kind,
         color_bgra14,
         brush_size,
+        brush_density,
         ink_opacity,
         points,
     });
@@ -718,6 +734,9 @@ fn rasterize_linework(
             continue;
         };
         let mut color = color14_to_rgba(stroke.color_bgra14.unwrap_or([0, 0, 0, 0x4000]));
+        if let Some(density) = stroke.brush_density {
+            color[3] = (f32::from(color[3]) * density).round() as u8;
+        }
         if let Some(opacity) = stroke.ink_opacity {
             color[3] = (f32::from(color[3]) * opacity).round() as u8;
         }
@@ -1623,6 +1642,7 @@ mod tests {
         assert_eq!(stroke.id(), 1);
         assert_eq!(stroke.color_bgra14(), linework.color_bgra14());
         assert_eq!(stroke.brush_size(), linework.brush_size());
+        assert_eq!(stroke.brush_density(), Some(1.0));
         assert_eq!(stroke.ink_opacity(), Some(0.95));
         assert_eq!(stroke.kind(), 2);
         assert_eq!(stroke.points().len(), 13);
@@ -1662,6 +1682,37 @@ mod tests {
             absolute,
             [[18.0, 20.0], [286.0, 20.0], [286.0, 288.0], [18.0, 288.0]]
         );
+    }
+
+    #[test]
+    fn decodes_curve_methods_and_brush_density_from_owned_fixture_when_available() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/private/curve method.sai2");
+        let Ok(bytes) = std::fs::read(path) else {
+            return;
+        };
+        let layers = decode_layers(&bytes, DecodeLimits::default()).unwrap();
+        let expected = [
+            ("normal", 0_u32),
+            ("Bezier curve", 1),
+            ("Ver1 Compatible", 2),
+        ];
+        for (name, method) in expected {
+            let linework = layers
+                .iter()
+                .find(|layer| layer.name() == name)
+                .and_then(Sai2Layer::linework)
+                .unwrap();
+            assert_eq!(linework.strokes().len(), 4);
+            assert!(
+                linework
+                    .strokes()
+                    .iter()
+                    .all(|stroke| stroke.kind() == method)
+            );
+            assert_eq!(linework.strokes()[0].brush_density(), Some(1.0));
+            assert_eq!(linework.strokes()[2].brush_density(), Some(0.25));
+        }
     }
 
     #[test]
