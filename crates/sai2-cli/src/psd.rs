@@ -696,8 +696,12 @@ fn write_rle_gray_plane(
     write_u16(output, 1)?;
     write_row_lengths(output, &lengths)?;
     let width = usize::try_from(width).map_err(|_| "PSD row is too wide")?;
+    let mut inverted = vec![0_u8; width];
     for row in gray.chunks_exact(width) {
-        write_packbits_row(output, row)?;
+        for (destination, source) in inverted.iter_mut().zip(row) {
+            *destination = 255 - source;
+        }
+        write_packbits_row(output, &inverted)?;
     }
     Ok(())
 }
@@ -874,6 +878,20 @@ mod tests {
     }
 
     #[test]
+    fn inverts_sai2_mask_values_when_writing_a_psd_mask_channel() {
+        let mut channel = Vec::new();
+        write_rle_gray_plane(&mut channel, &[0, 1, 127, 254, 255], 5, 1).unwrap();
+
+        assert_eq!(u16::from_be_bytes(channel[0..2].try_into().unwrap()), 1);
+        let encoded_len = usize::from(u16::from_be_bytes(channel[2..4].try_into().unwrap()));
+        assert_eq!(encoded_len, channel.len() - 4);
+        assert_eq!(
+            decode_packbits_test_row(&channel[4..]),
+            [255, 254, 128, 1, 0]
+        );
+    }
+
+    #[test]
     fn writes_a_layered_psd_when_the_owned_fixture_is_available() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/private/32x32-redball-greenball-multiple-layer.sai2");
@@ -1011,5 +1029,24 @@ mod tests {
             cursor += source_len;
         }
         assert_eq!(cursor, payload.len());
+    }
+
+    fn decode_packbits_test_row(encoded: &[u8]) -> Vec<u8> {
+        let mut decoded = Vec::new();
+        let mut offset = 0;
+        while offset < encoded.len() {
+            let header = i8::from_ne_bytes([encoded[offset]]);
+            offset += 1;
+            if header >= 0 {
+                let length = usize::from(u8::try_from(header).unwrap()) + 1;
+                decoded.extend_from_slice(&encoded[offset..offset + length]);
+                offset += length;
+            } else if header != -128 {
+                let length = usize::from(u8::try_from(1_i16 - i16::from(header)).unwrap());
+                decoded.extend(std::iter::repeat_n(encoded[offset], length));
+                offset += 1;
+            }
+        }
+        decoded
     }
 }

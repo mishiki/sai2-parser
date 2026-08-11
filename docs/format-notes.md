@@ -196,6 +196,9 @@ one-channel form of the block DPCM family used by `lpix`. It decodes to a
 300 x 300 grayscale image with observed values from 0 through 250. PSD export
 stores this as channel ID -2 with a full-canvas 20-byte layer-mask record. The
 exact `mpix` body is also included in the owning layer's `s2ly` block.
+SAI2's observed mask samples use the opposite polarity from PSD user masks, so
+PSD channel bytes are written as `255 - sample`. The typed SAI2 mask image and
+the preserved `mpix` chunk retain their original values.
 
 The fixture's `liwk` body contains a `strk` container. Its observed color is
 four 14-bit BGRA values, its brush size is a 32-bit float, and its one stroke
