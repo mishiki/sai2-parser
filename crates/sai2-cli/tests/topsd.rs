@@ -64,7 +64,7 @@ fn converts_the_owned_folder_mask_and_vector_fixture_when_available() {
     assert!(!stdout.contains("structured non-raster layer(s)"));
     assert!(psd.windows(8).any(|window| window == b"8BIMlsct"));
     assert!(psd.windows(4).any(|window| window == b"pass"));
-    assert!(psd.windows(4).any(|window| window == b"lddg"));
+    assert!(psd.windows(4).any(|window| window == b"idiv"));
     assert!(psd.windows(4).any(|window| window == b"lite"));
     assert_eq!(
         psd.windows(8)
@@ -125,4 +125,36 @@ fn converts_the_owned_shape_primitives_to_native_psd_shapes_when_available() {
             .count(),
         3
     );
+}
+
+#[test]
+fn maps_the_owned_sai2_burn_fixture_like_sai2s_psd_export_when_available() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/private/vectorline-burn.sai2");
+    let reference = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/private/vectorline-burn.psd");
+    if !fixture.exists() || !reference.exists() {
+        return;
+    }
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock should follow the Unix epoch")
+        .as_nanos();
+    let output = std::env::temp_dir().join(format!(
+        "sai2topsd-burn-test-{}-{unique}.psd",
+        std::process::id()
+    ));
+
+    let command = Command::new(env!("CARGO_BIN_EXE_sai2topsd"))
+        .arg(&fixture)
+        .arg(&output)
+        .output()
+        .expect("sai2topsd should run");
+    let psd = fs::read(&output).expect("output PSD should be readable");
+    let reference_psd = fs::read(reference).expect("SAI2 reference PSD should be readable");
+    let _ = fs::remove_file(output);
+
+    assert!(command.status.success());
+    assert!(psd.windows(4).any(|window| window == b"idiv"));
+    assert!(reference_psd.windows(4).any(|window| window == b"idiv"));
 }

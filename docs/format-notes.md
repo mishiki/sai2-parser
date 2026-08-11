@@ -243,19 +243,20 @@ SAI2's current blend-mode menu keys map to PSD as follows:
 | SAI2 mode | SAI2 key | PSD key |
 | --- | --- | --- |
 | 通常 / 乗算 / スクリーン / オーバーレイ | `norm` / `mult` / `scrn` / `over` | `norm` / `mul ` / `scrn` / `over` |
-| 陰影 / 発光 / 明暗 | `sbad` / `burn` / `ddge` | `lbrn` / `lddg` / `lLit` |
-| 焼き込み / 覆い焼き / 焼き・覆い | `bndg` / `ilit` / `cdif` | `idiv` / `div ` / `vLit` |
-| ソフトライト / ハードライト / ビビッド / ハードミックス | `slit` / `hlit` / `plit` / `hmix` | `sLit` / `hLit` / `pLit` / `hMix` |
+| 陰影 / 発光 / 明暗 | `sub ` / `add ` / `sbad` | `lbrn` / `lddg` / `lLit` |
+| 焼き込み / 覆い焼き / 焼き・覆い | `burn` / `ddge` / `bndg` | `idiv` / `div ` / `vLit` |
+| ソフトライト / ハードライト / ビビッド / ハードミックス | `slit` / `hlit` / `ilit` / `hmix` | `sLit` / `hLit` / `pLit` / `hMix` |
 | 比較（暗）/ 比較（明）| `dark` / `litn` | `dark` / `lite` |
 | カラー比較（暗）/ カラー比較（明）| `drkc` / `litc` | `dkCl` / `lgCl` |
 | 差の絶対値 / 除外 / 減算 / 除算 | `diff` / `excl` / `fsub` / `fdiv` | `diff` / `smud` / `fsub` / `fdiv` |
 | 色相 / 彩度 / カラー / 輝度 | `hue ` / `sat ` / `col ` / `lum ` | `hue ` / `sat ` / `colr` / `lum ` |
 
 Folder pass-through `pass` is retained. SAI2 compatibility keys for linear
-burn/dodge/light, color burn/dodge, vivid light, add, and subtract are also
-accepted. The user visually confirmed 焼き・覆い as Vivid Light and judged
-ビビッド as provisionally closest to Pin Light; those two should eventually
-receive pixel-level comparison fixtures.
+burn/dodge/light, color burn/dodge, vivid light, pin light, and color difference
+are also accepted. The `vectorline-burn` fixture confirms that SAI2 `burn`
+exports as Photoshop Color Burn (`idiv`). The user visually confirmed
+焼き・覆い as Vivid Light and judged ビビッド as provisionally closest to Pin
+Light; those two should eventually receive pixel-level comparison fixtures.
 
 The PSD writer rasterizes decoded linework to an independent pixel layer. For
 the observed SAI2 shape tool, one closed opaque-fill path with three points is
