@@ -1,8 +1,16 @@
+//! Small streaming RGBA PNG serializer used by the command-line tools.
+
 use std::io::Write;
 
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const STORED_BLOCK_MAX: usize = u16::MAX as usize;
 
+/// Writes an eight-bit straight-alpha RGBA image as a PNG stream.
+///
+/// # Errors
+///
+/// Returns an error for invalid dimensions, inconsistent pixel-buffer length,
+/// arithmetic overflow, or a failure while writing the destination stream.
 pub fn write_rgba(
     mut output: impl Write,
     width: u32,

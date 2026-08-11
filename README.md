@@ -136,6 +136,8 @@ Chunks:
 
 - `crates/sai2-core`: byte-oriented parsing library with no filesystem or
   operating-system dependency;
+- `crates/sai2-png`: streaming RGBA PNG serialization, independent of SAI2
+  parsing and command-line concerns;
 - `crates/sai2-psd`: layered PSD serialization for documents decoded by
   `sai2-core`, kept separate from SAI2 parsing and rendering research;
 - `crates/sai2-cli`: `sai2-info`, `sai2-extract`, and `sai2topsd` command-line

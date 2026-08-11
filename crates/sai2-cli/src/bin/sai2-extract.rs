@@ -1,6 +1,3 @@
-#[path = "../png.rs"]
-mod png;
-
 use std::{
     env, fs,
     io::{BufWriter, Write},
@@ -9,6 +6,7 @@ use std::{
 };
 
 use sai2_core::{DecodeLimits, decode_integrated_image};
+use sai2_png::write_rgba;
 
 fn main() -> ExitCode {
     match run() {
@@ -31,7 +29,7 @@ fn run() -> Result<(), String> {
     let output = fs::File::create(&output_path)
         .map_err(|error| format!("could not create {}: {error}", output_path.display()))?;
     let mut output = BufWriter::new(output);
-    png::write_rgba(&mut output, image.width(), image.height(), image.pixels())?;
+    write_rgba(&mut output, image.width(), image.height(), image.pixels())?;
     output
         .flush()
         .map_err(|error| format!("could not finish {}: {error}", output_path.display()))?;
