@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 sai2-core = { path = "../sai2-core" }
+sai2-psd = { path = "../sai2-psd" }
 
 [[bin]]
 name = "sai2-info"

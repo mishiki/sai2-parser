@@ -1,6 +1,3 @@
-#[path = "../psd.rs"]
-mod psd;
-
 use std::{
     env, fs,
     io::{BufWriter, Write},
@@ -9,6 +6,7 @@ use std::{
 };
 
 use sai2_core::{DecodeLimits, Sai2Document, decode_integrated_image, decode_layers};
+use sai2_psd::write_layered;
 
 fn main() -> ExitCode {
     match run() {
@@ -38,7 +36,7 @@ fn run() -> Result<(), String> {
     let output = fs::File::create(&output_path)
         .map_err(|error| format!("could not create {}: {error}", output_path.display()))?;
     let mut output = BufWriter::new(output);
-    psd::write_layered(
+    write_layered(
         &mut output,
         document.header().width(),
         document.header().height(),

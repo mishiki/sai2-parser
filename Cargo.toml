@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/sai2-core", "crates/sai2-cli"]
+members = ["crates/sai2-core", "crates/sai2-psd", "crates/sai2-cli"]
 resolver = "3"
 
 [workspace.package]

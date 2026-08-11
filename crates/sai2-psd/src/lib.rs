@@ -1,3 +1,5 @@
+//! Layered PSD 1.0 serialization for decoded SAI2 documents.
+
 use std::io::Write;
 
 use sai2_core::{RgbaImage, Sai2Layer, Sai2Shape};
@@ -17,6 +19,13 @@ enum PsdRecord<'a> {
 }
 
 #[allow(clippy::too_many_lines)]
+/// Writes decoded SAI2 layers and their saved composite as a layered PSD 1.0 stream.
+///
+/// # Errors
+///
+/// Returns an error when the canvas or layer data cannot be represented by
+/// PSD 1.0, when the decoded image dimensions are inconsistent, or when the
+/// destination stream cannot be written.
 pub fn write_layered(
     output: &mut impl Write,
     width: u32,
