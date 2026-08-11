@@ -59,13 +59,16 @@ pub fn write_layered(
         }
     }
 
-    let pixel_count = checked_pixel_count(width, height)?;
-    let channel_data_len = checked_u32(
-        pixel_count
-            .checked_add(2)
-            .ok_or("PSD channel length overflow")?,
-    )?;
     let records = build_psd_records(layers)?;
+    let record_channel_lengths = records
+        .iter()
+        .map(|record| record_channel_lengths(*record, width, height))
+        .collect::<Result<Vec<_>, _>>()?;
+    let background_channel_lengths = if white_background {
+        Some(vec![rle_solid_plane_len(width, height)?; 4])
+    } else {
+        None
+    };
     let extra_lens = records
         .iter()
         .map(|record| record_extra_len(*record))
@@ -88,16 +91,17 @@ pub fn write_layered(
         .len()
         .checked_add(usize::from(white_background))
         .ok_or_else(|| "PSD has too many layers".to_owned())?;
-    let source_channel_count = records.iter().try_fold(0_usize, |sum, record| {
-        sum.checked_add(record_channel_count(*record))
-            .ok_or_else(|| "PSD layer channel count is too large".to_owned())
-    })?;
-    let image_channel_count = source_channel_count
-        .checked_add(if white_background { 4 } else { 0 })
-        .ok_or_else(|| "PSD layer channel count is too large".to_owned())?;
-    let image_data_len = image_channel_count
-        .checked_mul(pixel_count + 2)
-        .ok_or_else(|| "PSD layer image data is too large".to_owned())?;
+    let image_data_len =
+        record_channel_lengths
+            .iter()
+            .flatten()
+            .chain(background_channel_lengths.iter().flatten())
+            .try_fold(0_usize, |sum, length| {
+                sum.checked_add(usize::try_from(*length).map_err(|_| {
+                    "PSD layer channel length does not fit this platform".to_owned()
+                })?)
+                .ok_or_else(|| "PSD layer image data is too large".to_owned())
+            })?;
     let mut layer_info_len = 2_usize
         .checked_add(records_len)
         .and_then(|length| length.checked_add(image_data_len))
@@ -128,7 +132,14 @@ pub fn write_layered(
     )?;
 
     if white_background {
-        write_common_layer_record(output, width, height, channel_data_len)?;
+        write_common_layer_record(
+            output,
+            width,
+            height,
+            background_channel_lengths
+                .as_deref()
+                .ok_or("missing PSD background channel lengths")?,
+        )?;
         output.write_all(b"8BIMnorm").map_err(io_error)?;
         output.write_all(&[255, 0, 0, 0]).map_err(io_error)?;
         write_u32(output, checked_u32(background_extra_len)?)?;
@@ -137,53 +148,50 @@ pub fn write_layered(
         write_pascal_name(output, BACKGROUND_NAME)?;
         write_unicode_name(output, BACKGROUND_NAME)?;
     }
-    for (record, extra_len) in records.iter().zip(&extra_lens) {
+    for ((record, extra_len), channel_lengths) in
+        records.iter().zip(&extra_lens).zip(&record_channel_lengths)
+    {
         write_record(
             output,
             *record,
             *extra_len,
             width,
             height,
-            channel_data_len,
+            channel_lengths,
             source,
         )?;
     }
 
     if white_background {
         for _ in 0..4 {
-            write_u16(output, 0)?; // raw channel data
-            write_solid_plane(output, 255, pixel_count)?;
+            write_rle_solid_plane(output, 255, width, height)?;
         }
     }
     for record in &records {
-        write_record_pixels(output, *record, pixel_count)?;
+        write_record_pixels(output, *record, width, height)?;
     }
     if (2 + records_len + image_data_len) % 2 != 0 {
         output.write_all(&[0]).map_err(io_error)?;
     }
     write_u32(output, 0)?; // global layer mask
 
-    write_u16(output, 0)?; // raw composite data
-    for channel in 0..4 {
-        write_plane(output, composite.pixels(), channel)?;
-    }
+    write_rle_composite(output, composite.pixels(), width, height)?;
     Ok(())
 }
 
 fn build_psd_records(layers: &[Sai2Layer]) -> Result<Vec<PsdRecord<'_>>, String> {
     let mut records = Vec::with_capacity(layers.len() * 2);
-    let mut depth = 0_u16;
+    let mut depth = 0_u8;
     for layer in layers.iter().rev() {
         let layer_depth = layer.nesting_level();
         if layer_depth > depth {
-            if layer_depth != depth + 1 {
-                return Err(format!(
-                    "layer {} jumps from folder depth {depth} to {layer_depth}",
-                    layer.id()
-                ));
+            // Reversing SAI2's top-to-bottom list can enter several nested
+            // folders at once because their opening records occur later in
+            // PSD's bottom-to-top order.
+            while depth < layer_depth {
+                records.push(PsdRecord::Divider);
+                depth += 1;
             }
-            records.push(PsdRecord::Divider);
-            depth = layer_depth;
         } else if layer_depth < depth {
             if layer_depth + 1 != depth || !layer.is_folder() {
                 return Err(format!(
@@ -211,10 +219,13 @@ fn write_record(
     extra_len: usize,
     width: u32,
     height: u32,
-    channel_data_len: u32,
+    channel_lengths: &[u32],
     source: &[u8],
 ) -> Result<(), String> {
     let channels = record_channel_count(record);
+    if channel_lengths.len() != channels {
+        return Err("PSD layer channel-length count mismatch".to_owned());
+    }
     if channels == 0 {
         for _ in 0..4 {
             write_i32(output, 0)?;
@@ -235,13 +246,17 @@ fn write_record(
         output,
         u16::try_from(channels).map_err(|_| "too many PSD layer channels")?,
     )?;
-    for id in CHANNEL_IDS.into_iter().take(channels.min(4)) {
+    for (id, length) in CHANNEL_IDS
+        .into_iter()
+        .take(channels.min(4))
+        .zip(channel_lengths)
+    {
         write_i16(output, id)?;
-        write_u32(output, channel_data_len)?;
+        write_u32(output, *length)?;
     }
     if channels == 5 {
         write_i16(output, -2)?;
-        write_u32(output, channel_data_len)?;
+        write_u32(output, channel_lengths[4])?;
     }
 
     output.write_all(b"8BIM").map_err(io_error)?;
@@ -250,7 +265,7 @@ fn write_record(
             output.write_all(&psd_blend_key(layer)).map_err(io_error)?;
             let opacity = u8::try_from((u16::from(layer.opacity()) * 255 + 50) / 100)
                 .map_err(|_| "PSD opacity overflow")?;
-            let clipping = u8::from(layer.flags() & 0x0100_0000 != 0);
+            let clipping = u8::from(layer.flags() & 0x0000_0100 != 0);
             let flags = if layer.visible() { 0 } else { 2 };
             output
                 .write_all(&[opacity, clipping, flags, 0])
@@ -282,7 +297,8 @@ fn write_record(
 fn write_record_pixels(
     output: &mut impl Write,
     record: PsdRecord<'_>,
-    pixel_count: usize,
+    width: u32,
+    height: u32,
 ) -> Result<(), String> {
     let PsdRecord::Source(layer) = record else {
         return Ok(());
@@ -292,13 +308,11 @@ fn write_record_pixels(
     }
     if let Some(image) = layer.image() {
         for channel in 0..4 {
-            write_u16(output, 0)?;
-            write_plane(output, image.pixels(), channel)?;
+            write_rle_rgba_plane(output, image.pixels(), channel, width, height)?;
         }
     } else {
         for _ in 0..4 {
-            write_u16(output, 0)?;
-            write_solid_plane(output, 0, pixel_count)?;
+            write_rle_solid_plane(output, 0, width, height)?;
         }
     }
     if let Some(mask) = layer.mask() {
@@ -309,8 +323,7 @@ fn write_record_pixels(
                 layer.name()
             )
         })?;
-        write_u16(output, 0)?;
-        output.write_all(image.pixels()).map_err(io_error)?;
+        write_rle_gray_plane(output, image.pixels(), width, height)?;
     }
     Ok(())
 }
@@ -319,8 +332,11 @@ fn write_common_layer_record(
     output: &mut impl Write,
     width: u32,
     height: u32,
-    channel_data_len: u32,
+    channel_lengths: &[u32],
 ) -> Result<(), String> {
+    if channel_lengths.len() != 4 {
+        return Err("PSD background channel-length count mismatch".to_owned());
+    }
     write_i32(output, 0)?;
     write_i32(output, 0)?;
     write_i32(
@@ -332,9 +348,9 @@ fn write_common_layer_record(
         i32::try_from(width).map_err(|_| "PSD width is too large")?,
     )?;
     write_u16(output, 4)?;
-    for id in CHANNEL_IDS {
+    for (id, length) in CHANNEL_IDS.into_iter().zip(channel_lengths) {
         write_i16(output, id)?;
-        write_u32(output, channel_data_len)?;
+        write_u32(output, *length)?;
     }
     Ok(())
 }
@@ -349,6 +365,37 @@ fn record_channel_count(record: PsdRecord<'_>) -> usize {
         PsdRecord::Source(layer) if layer.is_folder() => 0,
         PsdRecord::Source(layer) => 4 + usize::from(layer.mask().is_some()),
     }
+}
+
+fn record_channel_lengths(
+    record: PsdRecord<'_>,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u32>, String> {
+    let PsdRecord::Source(layer) = record else {
+        return Ok(Vec::new());
+    };
+    if layer.is_folder() {
+        return Ok(Vec::new());
+    }
+    let mut lengths = if let Some(image) = layer.image() {
+        (0..4)
+            .map(|channel| rle_rgba_plane_len(image.pixels(), channel, width, height))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        vec![rle_solid_plane_len(width, height)?; 4]
+    };
+    if let Some(mask) = layer.mask() {
+        let image = mask.image().ok_or_else(|| {
+            format!(
+                "layer {} ({}) has an undecoded mask",
+                layer.id(),
+                layer.name()
+            )
+        })?;
+        lengths.push(rle_gray_plane_len(image.pixels(), width, height)?);
+    }
+    Ok(lengths)
 }
 
 fn record_extra_len(record: PsdRecord<'_>) -> Result<usize, String> {
@@ -458,7 +505,7 @@ fn pascal_name_len(name: &str) -> usize {
 
 fn unicode_name_block_len(name: &str) -> usize {
     let data_len = 4 + name.encode_utf16().count() * 2;
-    12 + round_up(data_len, 4)
+    12 + data_len
 }
 
 fn write_pascal_name(output: &mut impl Write, name: &str) -> Result<(), String> {
@@ -489,9 +536,6 @@ fn write_unicode_name(output: &mut impl Write, name: &str) -> Result<(), String>
     write_u32(output, checked_u32(units.len())?)?;
     for unit in units {
         write_u16(output, unit)?;
-    }
-    for _ in data_len..round_up(data_len, 4) {
-        output.write_all(&[0]).map_err(io_error)?;
     }
     Ok(())
 }
@@ -552,29 +596,234 @@ fn psd_blend_key(layer: &Sai2Layer) -> [u8; 4] {
     }
 }
 
-fn write_plane(output: &mut impl Write, rgba: &[u8], channel: usize) -> Result<(), String> {
-    let plane = rgba
-        .chunks_exact(4)
-        .map(|pixel| pixel[channel])
-        .collect::<Vec<_>>();
-    output.write_all(&plane).map_err(io_error)
+fn rle_rgba_plane_len(rgba: &[u8], channel: usize, width: u32, height: u32) -> Result<u32, String> {
+    let row_lengths = rgba_row_lengths(rgba, channel, width, height)?;
+    rle_channel_len(&row_lengths)
 }
 
-fn write_solid_plane(output: &mut impl Write, value: u8, length: usize) -> Result<(), String> {
-    const BUFFER_LEN: usize = 8 * 1024;
-    let buffer = [value; BUFFER_LEN];
-    let mut remaining = length;
-    while remaining != 0 {
-        let count = remaining.min(BUFFER_LEN);
-        output.write_all(&buffer[..count]).map_err(io_error)?;
-        remaining -= count;
+fn rle_gray_plane_len(gray: &[u8], width: u32, height: u32) -> Result<u32, String> {
+    let row_lengths = gray_row_lengths(gray, width, height)?;
+    rle_channel_len(&row_lengths)
+}
+
+fn rle_solid_plane_len(width: u32, height: u32) -> Result<u32, String> {
+    let width = usize::try_from(width).map_err(|_| "PSD row is too wide")?;
+    let height = usize::try_from(height).map_err(|_| "PSD has too many rows")?;
+    let row_len = packbits_row_len(&vec![0; width]);
+    let row_len = u16::try_from(row_len).map_err(|_| "PSD RLE row exceeds 65535 bytes")?;
+    rle_channel_len(&vec![row_len; height])
+}
+
+fn rle_channel_len(row_lengths: &[u16]) -> Result<u32, String> {
+    let encoded = row_lengths.iter().try_fold(0_usize, |sum, length| {
+        sum.checked_add(usize::from(*length))
+            .ok_or_else(|| "PSD RLE channel is too large".to_owned())
+    })?;
+    let length = 2_usize
+        .checked_add(
+            row_lengths
+                .len()
+                .checked_mul(2)
+                .ok_or("PSD RLE row table is too large")?,
+        )
+        .and_then(|value| value.checked_add(encoded))
+        .ok_or("PSD RLE channel is too large")?;
+    checked_u32(length)
+}
+
+fn rgba_row_lengths(
+    rgba: &[u8],
+    channel: usize,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u16>, String> {
+    if channel >= 4 {
+        return Err("invalid RGBA channel index".to_owned());
+    }
+    let width = usize::try_from(width).map_err(|_| "PSD row is too wide")?;
+    let height = usize::try_from(height).map_err(|_| "PSD has too many rows")?;
+    let stride = width.checked_mul(4).ok_or("PSD row is too wide")?;
+    if rgba.len() != stride.checked_mul(height).ok_or("PSD image is too large")? {
+        return Err("RGBA pixel length does not match PSD dimensions".to_owned());
+    }
+    let mut row = vec![0; width];
+    let mut lengths = Vec::with_capacity(height);
+    for source in rgba.chunks_exact(stride) {
+        for (destination, pixel) in row.iter_mut().zip(source.chunks_exact(4)) {
+            *destination = pixel[channel];
+        }
+        lengths.push(
+            u16::try_from(packbits_row_len(&row)).map_err(|_| "PSD RLE row exceeds 65535 bytes")?,
+        );
+    }
+    Ok(lengths)
+}
+
+fn gray_row_lengths(gray: &[u8], width: u32, height: u32) -> Result<Vec<u16>, String> {
+    let width = usize::try_from(width).map_err(|_| "PSD row is too wide")?;
+    let height = usize::try_from(height).map_err(|_| "PSD has too many rows")?;
+    if gray.len() != width.checked_mul(height).ok_or("PSD image is too large")? {
+        return Err("grayscale pixel length does not match PSD dimensions".to_owned());
+    }
+    gray.chunks_exact(width)
+        .map(|row| {
+            u16::try_from(packbits_row_len(row))
+                .map_err(|_| "PSD RLE row exceeds 65535 bytes".to_owned())
+        })
+        .collect()
+}
+
+fn write_rle_rgba_plane(
+    output: &mut impl Write,
+    rgba: &[u8],
+    channel: usize,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    let lengths = rgba_row_lengths(rgba, channel, width, height)?;
+    write_u16(output, 1)?;
+    write_row_lengths(output, &lengths)?;
+    write_rgba_rows(output, rgba, channel, width)
+}
+
+fn write_rle_gray_plane(
+    output: &mut impl Write,
+    gray: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    let lengths = gray_row_lengths(gray, width, height)?;
+    write_u16(output, 1)?;
+    write_row_lengths(output, &lengths)?;
+    let width = usize::try_from(width).map_err(|_| "PSD row is too wide")?;
+    for row in gray.chunks_exact(width) {
+        write_packbits_row(output, row)?;
     }
     Ok(())
 }
 
-fn checked_pixel_count(width: u32, height: u32) -> Result<usize, String> {
-    usize::try_from(u64::from(width) * u64::from(height))
-        .map_err(|_| "PSD canvas is too large".to_owned())
+fn write_rle_solid_plane(
+    output: &mut impl Write,
+    value: u8,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    let width = usize::try_from(width).map_err(|_| "PSD row is too wide")?;
+    let height = usize::try_from(height).map_err(|_| "PSD has too many rows")?;
+    let row = vec![value; width];
+    let encoded_len =
+        u16::try_from(packbits_row_len(&row)).map_err(|_| "PSD RLE row exceeds 65535 bytes")?;
+    write_u16(output, 1)?;
+    write_row_lengths(output, &vec![encoded_len; height])?;
+    for _ in 0..height {
+        write_packbits_row(output, &row)?;
+    }
+    Ok(())
+}
+
+fn write_rle_composite(
+    output: &mut impl Write,
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    let lengths = (0..4)
+        .map(|channel| rgba_row_lengths(rgba, channel, width, height))
+        .collect::<Result<Vec<_>, _>>()?;
+    write_u16(output, 1)?;
+    for channel_lengths in &lengths {
+        write_row_lengths(output, channel_lengths)?;
+    }
+    for channel in 0..4 {
+        write_rgba_rows(output, rgba, channel, width)?;
+    }
+    Ok(())
+}
+
+fn write_row_lengths(output: &mut impl Write, lengths: &[u16]) -> Result<(), String> {
+    for length in lengths {
+        write_u16(output, *length)?;
+    }
+    Ok(())
+}
+
+fn write_rgba_rows(
+    output: &mut impl Write,
+    rgba: &[u8],
+    channel: usize,
+    width: u32,
+) -> Result<(), String> {
+    let width = usize::try_from(width).map_err(|_| "PSD row is too wide")?;
+    let stride = width.checked_mul(4).ok_or("PSD row is too wide")?;
+    let mut row = vec![0; width];
+    for source in rgba.chunks_exact(stride) {
+        for (destination, pixel) in row.iter_mut().zip(source.chunks_exact(4)) {
+            *destination = pixel[channel];
+        }
+        write_packbits_row(output, &row)?;
+    }
+    Ok(())
+}
+
+fn packbits_row_len(row: &[u8]) -> usize {
+    let mut encoded = 0_usize;
+    let mut offset = 0_usize;
+    while offset < row.len() {
+        let run = repeated_run_len(row, offset);
+        if run >= 3 {
+            encoded += 2;
+            offset += run;
+            continue;
+        }
+        let start = offset;
+        offset += run;
+        while offset < row.len() && offset - start < 128 {
+            let next_run = repeated_run_len(row, offset);
+            if next_run >= 3 {
+                break;
+            }
+            offset += next_run.min(128 - (offset - start));
+        }
+        encoded += 1 + (offset - start);
+    }
+    encoded
+}
+
+fn write_packbits_row(output: &mut impl Write, row: &[u8]) -> Result<(), String> {
+    let mut offset = 0_usize;
+    while offset < row.len() {
+        let run = repeated_run_len(row, offset);
+        if run >= 3 {
+            let header = u8::try_from(257 - run).map_err(|_| "invalid PackBits repeat run")?;
+            output.write_all(&[header, row[offset]]).map_err(io_error)?;
+            offset += run;
+            continue;
+        }
+        let start = offset;
+        offset += run;
+        while offset < row.len() && offset - start < 128 {
+            let next_run = repeated_run_len(row, offset);
+            if next_run >= 3 {
+                break;
+            }
+            offset += next_run.min(128 - (offset - start));
+        }
+        let length = offset - start;
+        output
+            .write_all(&[u8::try_from(length - 1).map_err(|_| "invalid PackBits literal run")?])
+            .map_err(io_error)?;
+        output.write_all(&row[start..offset]).map_err(io_error)?;
+    }
+    Ok(())
+}
+
+fn repeated_run_len(row: &[u8], offset: usize) -> usize {
+    let value = row[offset];
+    let mut length = 1_usize;
+    while length < 128 && offset + length < row.len() && row[offset + length] == value {
+        length += 1;
+    }
+    length
 }
 
 fn checked_u32(value: usize) -> Result<u32, String> {
@@ -609,6 +858,20 @@ fn io_error(error: std::io::Error) -> String {
 mod tests {
     use super::*;
     use sai2_core::{DecodeLimits, FourCc, Sai2Document, decode_integrated_image, decode_layers};
+
+    #[test]
+    fn packbits_length_matches_encoded_rows() {
+        let rows = [
+            vec![7; 300],
+            (0_u8..=255).collect::<Vec<_>>(),
+            vec![1, 1, 2, 2, 3, 3, 3, 4, 5, 5, 6],
+        ];
+        for row in rows {
+            let mut encoded = Vec::new();
+            write_packbits_row(&mut encoded, &row).unwrap();
+            assert_eq!(encoded.len(), packbits_row_len(&row));
+        }
+    }
 
     #[test]
     fn writes_a_layered_psd_when_the_owned_fixture_is_available() {

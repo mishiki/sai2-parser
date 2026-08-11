@@ -36,6 +36,8 @@ the first tested slice of layered export:
 - decodes observed sparse, offset `lpix` block grids into straight-alpha RGBA;
 - writes those decoded layers, Unicode names, visibility, opacity, and basic
   blend modes to a PSD 1.0 file with the `sai2topsd` CLI;
+- uses PSD PackBits/RLE channel compression so large, sparse layered documents
+  do not expand unnecessarily toward PSD's 2 GB file-size limit;
 - decodes observed folder depth and pass-through mode and writes native PSD
   section-divider records;
 - decodes observed grayscale `mpix` layer masks and writes native PSD user-mask

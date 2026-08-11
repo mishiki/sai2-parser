@@ -183,8 +183,8 @@ channels into PSD's 8-bit straight-alpha representation and renderer rounding.
 
 An owned 300 x 300 fixture contains six `layr` records in SAI2's top-to-bottom
 order: a folder, linework, masked raster, raster, shape, and solid-color raster.
-The low 16 bits of the layer flag words are `0, 1, 1, 1, 1, 0`; they exactly
-describe folder nesting depth. The folder has type `fold`, blend key `pass`,
+The low byte of the layer flag words is `0, 1, 1, 1, 1, 0`; it exactly
+describes folder nesting depth. The folder has type `fold`, blend key `pass`,
 and high flag bits `0x40010000`. `sai2topsd` maps the hierarchy to PSD `lsct`
 records (type 1 for the folder and type 3 for its bounding divider) and retains
 pass-through mode.
@@ -205,6 +205,14 @@ pairs; single-precision pressure and width scale; and a 32-bit flag word.
 Coordinates are relative to the stroke origin. The typed decoder retains all
 fields, including zero and fractional pressure values.
 
+A larger owned document contains five `liwk` chunks and hundreds of strokes.
+It confirms that every top-level `strk` record contains one stroke. The
+identifier after the parameter terminator is repeated at the start of that
+stroke's header; it is not a stroke count. The first small fixture used ID 1,
+which made the two interpretations accidentally indistinguishable. Unknown
+stroke footers remain bounded by the enclosing record and are preserved in
+`s2ly`.
+
 The fixture's `shap` body contains a 14-bit BGRA fill color and one path. The
 path stores a double-precision origin and four point records using the same
 position/control-point layout, followed by flags. Adding the origin to the
@@ -222,6 +230,11 @@ The PSD composite preview is therefore pixel-identical to SAI2's saved `intg`,
 but recompositing only editable PSD layers omits those two appearances.
 Accurate pressure-sensitive linework rasterization and native PSD vector-shape
 output remain open work.
+
+Layer and composite channel pixels are written with PSD PackBits/RLE
+compression. A 5870 x 4175 owned document with 32 layers would occupy 2.811 GiB
+with full-canvas raw channels, beyond Photoshop's supported 2 GB PSD limit. RLE
+reduces the observed output to about 246 MiB without changing decoded pixels.
 
 ## Assumed by the current implementation
 
@@ -258,8 +271,9 @@ output remain open work.
 - Whether other `5N` or `lpix` block-grid variants add flags to the observed
   channel words or use different placement rules.
 - Meanings of all canvas-background flag values beyond the two observed modes.
-- Folder flag meanings beyond the observed nesting-depth low word and the
-  `0x40000000` bit on one `fold` layer.
+- Folder flag meanings beyond the observed nesting-depth low byte and the
+  `0x40000000` bit on one `fold` layer. The observed `0x00000100` flag marks a
+  layer clipped to the one below it and maps to PSD's clipping byte.
 - Semantics of unobserved `lmsk` flag combinations and mask block variants.
 - Linework stroke kinds, point flags, width-scale semantics, brush parameters,
   and rendering details beyond the one observed stroke.

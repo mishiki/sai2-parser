@@ -337,11 +337,10 @@ impl Sai2Layer {
         self.flags & 0x0001_0000 != 0
     }
 
-    /// Returns the observed folder nesting level stored in the low flag word.
+    /// Returns the observed folder nesting level stored in the low flag byte.
     #[must_use]
-    pub const fn nesting_level(&self) -> u16 {
-        let bytes = self.flags.to_le_bytes();
-        u16::from_le_bytes([bytes[0], bytes[1]])
+    pub const fn nesting_level(&self) -> u8 {
+        self.flags.to_le_bytes()[0]
     }
 
     #[must_use]
@@ -421,7 +420,9 @@ pub fn decode_layers(input: &[u8], limits: DecodeLimits) -> Result<Vec<Sai2Layer
                 .iter()
                 .find(|candidate| candidate.kind() == FourCc::from_bytes(*b"liwk"))
         {
-            layer.linework = Some(decode_linework(chunk_body(input, data_chunk)?)?);
+            // Vector metadata is best-effort: the exact source chunk remains
+            // preserved even when a future linework variant is not understood.
+            layer.linework = decode_linework(chunk_body(input, data_chunk)?).ok();
         }
         if layer.layer_type == FourCc::from_bytes(*b"shap")
             && let Some(data_chunk) = layer
@@ -429,7 +430,8 @@ pub fn decode_layers(input: &[u8], limits: DecodeLimits) -> Result<Vec<Sai2Layer
                 .iter()
                 .find(|candidate| candidate.kind() == FourCc::from_bytes(*b"shap"))
         {
-            layer.shape = Some(decode_shape(chunk_body(input, data_chunk)?)?);
+            // Shape metadata follows the same preservation-first policy.
+            layer.shape = decode_shape(chunk_body(input, data_chunk)?).ok();
         }
         if layer.layer_type == FourCc::from_bytes(*b"norm") {
             if let Some(pixel_chunk) = document.chunks().iter().find(|candidate| {
@@ -595,52 +597,56 @@ fn decode_stroke_container(value: &[u8], result: &mut Sai2Linework) -> Result<()
         offset = end;
     }
 
-    let stroke_count = usize::try_from(u32::from_le_bytes(read(value, offset)?))
-        .map_err(|_| layer_error("too many linework strokes"))?;
+    // Each observed top-level `strk` record contains exactly one stroke. This
+    // field is an identifier, not a stroke count; the first fixture happened
+    // to use ID 1, which made those interpretations appear equivalent.
+    let container_id = u32::from_le_bytes(read(value, offset)?);
     offset += 4;
-    for _ in 0..stroke_count {
-        let header_end = offset
-            .checked_add(32)
-            .ok_or_else(|| layer_error("linework stroke header overflow"))?;
-        if header_end > value.len() {
-            return Err(layer_error("truncated linework stroke header"));
-        }
-        let id = u32::from_le_bytes(read(value, offset)?);
-        let origin = [read_f64(value, offset + 12)?, read_f64(value, offset + 20)?];
-        let kind = u32::from_le_bytes(read(value, offset + 28)?);
-        offset = header_end;
-        let mut points = Vec::new();
-        loop {
-            let point_id = u32::from_le_bytes(read(value, offset)?);
-            if point_id == 0 {
-                offset += 4;
-                break;
-            }
-            let end = offset
-                .checked_add(64)
-                .ok_or_else(|| layer_error("linework point overflow"))?;
-            if end > value.len() {
-                return Err(layer_error("truncated linework point"));
-            }
-            let point = Sai2StrokePoint {
-                id: point_id,
-                position: [read_f64(value, offset + 4)?, read_f64(value, offset + 12)?],
-                control_before: [read_f64(value, offset + 20)?, read_f64(value, offset + 28)?],
-                control_after: [read_f64(value, offset + 36)?, read_f64(value, offset + 44)?],
-                pressure: read_f32(value, offset + 52)?,
-                width_scale: read_f32(value, offset + 56)?,
-                flags: u32::from_le_bytes(read(value, offset + 60)?),
-            };
-            points.push(point);
-            offset = end;
-        }
-        result.strokes.push(Sai2Stroke {
-            id,
-            origin,
-            kind,
-            points,
-        });
+    let header_end = offset
+        .checked_add(32)
+        .ok_or_else(|| layer_error("linework stroke header overflow"))?;
+    if header_end > value.len() {
+        return Err(layer_error("truncated linework stroke header"));
     }
+    let id = u32::from_le_bytes(read(value, offset)?);
+    if id != container_id {
+        return Err(layer_error("linework stroke identifier mismatch"));
+    }
+    let origin = [read_f64(value, offset + 12)?, read_f64(value, offset + 20)?];
+    let kind = u32::from_le_bytes(read(value, offset + 28)?);
+    offset = header_end;
+    let mut points = Vec::new();
+    loop {
+        let point_id = u32::from_le_bytes(read(value, offset)?);
+        if point_id == 0 {
+            break;
+        }
+        let end = offset
+            .checked_add(64)
+            .ok_or_else(|| layer_error("linework point overflow"))?;
+        if end > value.len() {
+            return Err(layer_error("truncated linework point"));
+        }
+        let point = Sai2StrokePoint {
+            id: point_id,
+            position: [read_f64(value, offset + 4)?, read_f64(value, offset + 12)?],
+            control_before: [read_f64(value, offset + 20)?, read_f64(value, offset + 28)?],
+            control_after: [read_f64(value, offset + 36)?, read_f64(value, offset + 44)?],
+            pressure: read_f32(value, offset + 52)?,
+            width_scale: read_f32(value, offset + 56)?,
+            flags: u32::from_le_bytes(read(value, offset + 60)?),
+        };
+        points.push(point);
+        offset = end;
+    }
+    // A trailing, still-uninterpreted stroke footer is present in some files.
+    // The enclosing `strk` length safely bounds it and `s2ly` preserves it.
+    result.strokes.push(Sai2Stroke {
+        id,
+        origin,
+        kind,
+        points,
+    });
     Ok(())
 }
 
@@ -1182,6 +1188,76 @@ const fn layer_error(reason: &'static str) -> ParseError {
 mod tests {
     use super::*;
     use crate::SAI2_MAGIC;
+
+    #[test]
+    fn decodes_one_stroke_from_each_linework_container() {
+        fn container(id: u32, next_id: u32) -> Vec<u8> {
+            let mut value = Vec::new();
+            value.extend_from_slice(&id.to_le_bytes());
+            value.extend_from_slice(&next_id.to_le_bytes());
+            value.extend_from_slice(&[0; 4]); // parameter terminator
+            value.extend_from_slice(&id.to_le_bytes()); // container identifier
+            value.extend_from_slice(&id.to_le_bytes()); // stroke identifier
+            value.extend_from_slice(&next_id.to_le_bytes());
+            value.extend_from_slice(&0_u32.to_le_bytes());
+            value.extend_from_slice(&0_f64.to_le_bytes()); // origin X
+            value.extend_from_slice(&0_f64.to_le_bytes()); // origin Y
+            value.extend_from_slice(&2_u32.to_le_bytes()); // observed stroke kind
+            value.extend_from_slice(&0_u32.to_le_bytes()); // point terminator
+
+            let mut record = Vec::new();
+            record.extend_from_slice(b"strk");
+            record.extend_from_slice(&u32::try_from(value.len()).unwrap().to_le_bytes());
+            record.extend_from_slice(&value);
+            record
+        }
+
+        let mut body = container(1, 2);
+        body.extend_from_slice(&container(2, 3));
+        body.extend_from_slice(&[0; 4]);
+
+        let linework = decode_linework(&body).expect("both stroke containers should decode");
+        assert_eq!(
+            linework
+                .strokes()
+                .iter()
+                .map(Sai2Stroke::id)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+    }
+
+    #[test]
+    fn decodes_all_linework_chunks_from_owned_large_fixture_when_available() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../outputs/test.sai2");
+        let Ok(bytes) = std::fs::read(path) else {
+            return;
+        };
+        let document = Sai2Document::parse(&bytes).expect("large fixture should parse");
+        let linework = document
+            .chunks()
+            .iter()
+            .filter(|chunk| chunk.kind().as_bytes() == *b"liwk")
+            .map(|chunk| decode_linework(chunk_body(&bytes, chunk).unwrap()).unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(linework.len(), 5);
+        assert_eq!(linework[0].strokes().len(), 6);
+        assert!(linework[1].strokes().is_empty());
+        assert_eq!(linework[2].strokes().len(), 13);
+        assert!(linework[3].strokes().len() > 100);
+        assert_eq!(linework[4].strokes().len(), 4);
+
+        let clipped = document
+            .chunks()
+            .iter()
+            .find(|chunk| chunk.kind().as_bytes() == *b"layr" && chunk.object_id() == 51)
+            .expect("fixture should contain clipped layer 51");
+        let clipped = parse_layer(chunk_body(&bytes, clipped).unwrap()).unwrap();
+        assert_eq!(clipped.flags(), 0x0001_0102);
+        assert_eq!(clipped.nesting_level(), 2);
+    }
 
     #[test]
     fn decodes_a_synthetic_transparent_raster_layer() {
