@@ -73,6 +73,32 @@ rasterized into its own PSD pixel layer. The fixture-backed SAI2 circle,
 triangle, square, and their freely transformed variants are written as native
 PSD solid-color shape layers. Text layers are not decoded yet.
 
+## Downloads
+
+Prebuilt Windows 11 x64 converters are published on the
+[latest GitHub Release](https://github.com/mishiki/sai2-parser/releases/latest):
+
+- `sai2topng-windows-x64.exe`: write the saved integrated image to PNG;
+- `sai2topsd-windows-x64.exe`: convert the decoded layer structure to PSD;
+- `sai2-tools-windows-x64.zip`: both converters, documentation, and the
+  optional Explorer context-menu installer;
+- `SHA256SUMS.txt`: SHA-256 checksums for the three downloads above.
+
+The ZIP keeps the short executable names expected by the context-menu
+installer. Extract the complete ZIP before running
+`install-sai2topng-context-menu.ps1`.
+
+Maintainers can publish a release by pushing a version tag:
+
+```console
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The tagged source is tested and compiled on GitHub's Windows x64 runner, then
+the workflow creates the corresponding GitHub Release. Tags containing a
+hyphen, such as `v0.2.0-beta.1`, are marked as prereleases.
+
 ## Usage
 
 ```console
