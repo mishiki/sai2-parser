@@ -1,0 +1,112 @@
+name: Release Windows binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-windows-x64:
+    name: Build and publish Windows x64
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test the workspace
+        run: cargo test --workspace --locked
+
+      - name: Build standalone converters
+        shell: pwsh
+        run: |
+          cargo rustc --release --locked -p sai2-cli --bin sai2topsd -- -C target-feature=+crt-static
+          cargo rustc --release --locked -p sai2-cli --bin sai2topng -- -C target-feature=+crt-static
+
+      - name: Stage release assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          New-Item -ItemType Directory -Path dist, dist\package -Force | Out-Null
+
+          Copy-Item target\release\sai2topsd.exe dist\sai2topsd-windows-x64.exe
+          Copy-Item target\release\sai2topng.exe dist\sai2topng-windows-x64.exe
+
+          Copy-Item target\release\sai2topsd.exe dist\package\sai2topsd.exe
+          Copy-Item target\release\sai2topng.exe dist\package\sai2topng.exe
+          Copy-Item scripts\windows\install-sai2topng-context-menu.ps1 dist\package\
+          Copy-Item README.md, LICENSE dist\package\
+
+          Compress-Archive `
+            -Path dist\package\* `
+            -DestinationPath dist\sai2-tools-windows-x64.zip
+
+          $assets = @(
+            'dist\sai2topsd-windows-x64.exe'
+            'dist\sai2topng-windows-x64.exe'
+            'dist\sai2-tools-windows-x64.zip'
+          )
+          $checksums = foreach ($asset in $assets) {
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $asset).Hash.ToLowerInvariant()
+            "$hash  $([IO.Path]::GetFileName($asset))"
+          }
+          $checksumPath = Join-Path $PWD 'dist\SHA256SUMS.txt'
+          [IO.File]::WriteAllLines(
+            $checksumPath,
+            $checksums,
+            [Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Smoke-test packaged executables
+        shell: pwsh
+        run: |
+          & .\dist\sai2topsd-windows-x64.exe --help
+          & .\dist\sai2topng-windows-x64.exe --help
+
+      - name: Create or update the GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $assets = @(
+            'dist\sai2topsd-windows-x64.exe'
+            'dist\sai2topng-windows-x64.exe'
+            'dist\sai2-tools-windows-x64.zip'
+            'dist\SHA256SUMS.txt'
+          )
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            & gh release upload $tag @assets --clobber
+          } else {
+            $arguments = @(
+              'release'
+              'create'
+              $tag
+            ) + $assets + @(
+              '--verify-tag'
+              '--generate-notes'
+              '--title'
+              $tag
+            )
+            if ($tag.Contains('-')) {
+              $arguments += '--prerelease'
+            }
+            & gh @arguments
+          }
+
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }

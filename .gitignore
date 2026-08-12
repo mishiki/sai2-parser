@@ -1,0 +1,6 @@
+/target/
+*.sai2
+*.png
+!docs/**/*.png
+!fixtures/**/*.png
+/fixtures/private/

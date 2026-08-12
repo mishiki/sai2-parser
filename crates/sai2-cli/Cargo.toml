@@ -1,0 +1,32 @@
+[package]
+name = "sai2-cli"
+description = "Command-line tools for the experimental sai2-core reader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sai2-core = { path = "../sai2-core" }
+sai2-png = { path = "../sai2-png" }
+sai2-psd = { path = "../sai2-psd" }
+
+[[bin]]
+name = "sai2-info"
+path = "src/main.rs"
+
+[[bin]]
+name = "sai2-extract"
+path = "src/bin/sai2-extract.rs"
+
+[[bin]]
+name = "sai2topng"
+path = "src/bin/sai2topng.rs"
+
+[[bin]]
+name = "sai2topsd"
+path = "src/bin/sai2topsd.rs"
+
+[lints]
+workspace = true

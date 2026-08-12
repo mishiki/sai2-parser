@@ -1,0 +1,14 @@
+[package]
+name = "sai2-psd"
+description = "Layered PSD export for decoded PaintTool SAI Ver.2 documents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sai2-core = { path = "../sai2-core" }
+
+[lints]
+workspace = true
