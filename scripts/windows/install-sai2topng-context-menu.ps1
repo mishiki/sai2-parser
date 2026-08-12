@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$ExePath = (Join-Path $PSScriptRoot 'sai2topng.exe'),
+    [string]$ExePath,
     [switch]$Uninstall
 )
 
@@ -12,6 +12,10 @@ if ($Uninstall) {
     }
     Write-Host 'Removed the Convert SAI2 to PNG context-menu command.'
     exit 0
+}
+
+if ([string]::IsNullOrWhiteSpace($ExePath)) {
+    $ExePath = Join-Path $PSScriptRoot 'sai2topng.exe'
 }
 
 $resolvedExe = (Resolve-Path -LiteralPath $ExePath -ErrorAction Stop).Path
