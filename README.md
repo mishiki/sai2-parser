@@ -85,6 +85,23 @@ Extract the merged image:
 cargo run --bin sai2-extract -- example.sai2 output.png
 ```
 
+For everyday conversion, `sai2topng` defaults to a PNG beside the source file:
+
+```console
+sai2topng example.sai2
+# writes example.png
+
+sai2topng example.sai2 another-name.png
+# writes the explicitly named output
+```
+
+The command decodes SAI2's saved integrated image, so it does not need to
+reconstruct vector, text, mask, or blend behavior to reproduce the saved
+canvas. On Windows, `scripts/windows/install-sai2topng-context-menu.ps1` can
+register the executable for `.sai2` files in the current user's Explorer
+context menu. Windows 11 may place this conventional shell verb under
+**Show more options**.
+
 Convert supported raster layers to PSD:
 
 ```console
@@ -140,8 +157,9 @@ Chunks:
   parsing and command-line concerns;
 - `crates/sai2-psd`: layered PSD serialization for documents decoded by
   `sai2-core`, kept separate from SAI2 parsing and rendering research;
-- `crates/sai2-cli`: `sai2-info`, `sai2-extract`, and `sai2topsd` command-line
-  front ends, containing only argument handling and filesystem I/O;
+- `crates/sai2-cli`: `sai2-info`, `sai2-extract`, `sai2topng`, and `sai2topsd`
+  command-line front ends, containing only argument handling and filesystem
+  I/O;
 - `docs/format-notes.md`: known, observed, assumed, and unknown format facts;
 - `fixtures/README.md`: policy for private and publishable test fixtures.
 

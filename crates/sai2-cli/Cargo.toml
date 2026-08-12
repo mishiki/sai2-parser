@@ -21,6 +21,10 @@ name = "sai2-extract"
 path = "src/bin/sai2-extract.rs"
 
 [[bin]]
+name = "sai2topng"
+path = "src/bin/sai2topng.rs"
+
+[[bin]]
 name = "sai2topsd"
 path = "src/bin/sai2topsd.rs"
 
