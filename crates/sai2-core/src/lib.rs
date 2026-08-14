@@ -17,6 +17,6 @@ pub use error::ParseError;
 pub use header::{FourCc, HEADER_LEN, SAI2_MAGIC, Sai2Header};
 pub use image::{DecodeLimits, RgbaImage, decode_integrated_image};
 pub use layer::{
-    GrayImage, Sai2Layer, Sai2Linework, Sai2Mask, Sai2Shape, Sai2ShapePath, Sai2ShapePoint,
-    Sai2Stroke, Sai2StrokePoint, decode_layers,
+    GrayImage, Sai2Layer, Sai2Linework, Sai2Mask, Sai2PressurePoint, Sai2Shape, Sai2ShapePath,
+    Sai2ShapePoint, Sai2Stroke, Sai2StrokePoint, decode_layers,
 };
