@@ -88,6 +88,48 @@ impl Sai2StrokePoint {
     }
 }
 
+/// One pressure-only control point attached to a linework curve segment.
+///
+/// Unlike [`Sai2StrokePoint`], this point has no canvas position or direction
+/// handles. Its position is the normalized curve length within the segment
+/// beginning at `segment_start_point_id`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sai2PressurePoint {
+    id: u32,
+    segment_start_point_id: u32,
+    curve_parameter: f64,
+    pressure: f32,
+    width_scale: f32,
+    flags: u32,
+}
+
+impl Sai2PressurePoint {
+    #[must_use]
+    pub const fn id(&self) -> u32 {
+        self.id
+    }
+    #[must_use]
+    pub const fn segment_start_point_id(&self) -> u32 {
+        self.segment_start_point_id
+    }
+    #[must_use]
+    pub const fn curve_parameter(&self) -> f64 {
+        self.curve_parameter
+    }
+    #[must_use]
+    pub const fn pressure(&self) -> f32 {
+        self.pressure
+    }
+    #[must_use]
+    pub const fn width_scale(&self) -> f32 {
+        self.width_scale
+    }
+    #[must_use]
+    pub const fn flags(&self) -> u32 {
+        self.flags
+    }
+}
+
 /// One observed SAI2 linework stroke and its editable Bezier points.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sai2Stroke {
@@ -97,8 +139,11 @@ pub struct Sai2Stroke {
     color_bgra14: Option<[u16; 4]>,
     brush_size: Option<f32>,
     brush_density: Option<f32>,
-    ink_opacity: Option<f32>,
+    minimum_density: Option<f32>,
+    paper_texture_strength: Option<f32>,
+    pen_tip_type: Option<u32>,
     points: Vec<Sai2StrokePoint>,
+    pressure_points: Vec<Sai2PressurePoint>,
 }
 
 impl Sai2Stroke {
@@ -127,14 +172,31 @@ impl Sai2Stroke {
     pub const fn brush_density(&self) -> Option<f32> {
         self.brush_density
     }
-    /// Returns the observed ink opacity multiplier from the stroke settings.
+    /// Returns the lower density bound controlled by SAI2's `最小濃度` UI.
     #[must_use]
-    pub const fn ink_opacity(&self) -> Option<f32> {
-        self.ink_opacity
+    pub const fn minimum_density(&self) -> Option<f32> {
+        self.minimum_density
+    }
+    /// Returns SAI2's `レイヤー用紙質感の影響 / 質感の強さ` setting.
+    #[must_use]
+    pub const fn paper_texture_strength(&self) -> Option<f32> {
+        self.paper_texture_strength
+    }
+    /// Returns the linework tip profile stored in the final `inkd` field.
+    /// Values 0 through 4 run from the softest to the hardest tip.
+    #[must_use]
+    pub const fn pen_tip_type(&self) -> Option<u32> {
+        self.pen_tip_type
     }
     #[must_use]
     pub fn points(&self) -> &[Sai2StrokePoint] {
         &self.points
+    }
+    /// Returns pressure-only controls, each keyed to its containing segment's
+    /// starting editable point.
+    #[must_use]
+    pub fn pressure_points(&self) -> &[Sai2PressurePoint] {
+        &self.pressure_points
     }
 }
 
@@ -613,7 +675,9 @@ fn decode_stroke_container(value: &[u8], result: &mut Sai2Linework) -> Result<()
     let mut color_bgra14 = None;
     let mut brush_size = None;
     let mut brush_density = None;
-    let mut ink_opacity = None;
+    let mut minimum_density = None;
+    let mut paper_texture_strength = None;
+    let mut pen_tip_type = None;
     loop {
         let tag = read::<4>(value, offset)?;
         if tag == [0; 4] {
@@ -648,12 +712,22 @@ fn decode_stroke_container(value: &[u8], result: &mut Sai2Linework) -> Result<()
                     }
                     brush_density = Some(density.clamp(0.0, 1.0));
                 }
-                if parameter.len() >= 16 {
-                    let opacity = read_f32(parameter, 12)?;
-                    if !opacity.is_finite() {
-                        return Err(layer_error("non-finite linework ink opacity"));
+                if parameter.len() >= 12 {
+                    let density = read_f32(parameter, 8)?;
+                    if !density.is_finite() {
+                        return Err(layer_error("non-finite linework minimum density"));
                     }
-                    ink_opacity = Some(opacity.clamp(0.0, 1.0));
+                    minimum_density = Some(density.clamp(0.0, 1.0));
+                }
+                if parameter.len() >= 16 {
+                    let strength = read_f32(parameter, 12)?;
+                    if !strength.is_finite() {
+                        return Err(layer_error("non-finite linework paper texture strength"));
+                    }
+                    paper_texture_strength = Some(strength.clamp(0.0, 1.0));
+                }
+                if parameter.len() >= 24 {
+                    pen_tip_type = Some(u32::from_le_bytes(read(parameter, 20)?));
                 }
             }
             _ => {}
@@ -703,8 +777,48 @@ fn decode_stroke_container(value: &[u8], result: &mut Sai2Linework) -> Result<()
         points.push(point);
         offset = end;
     }
-    // A trailing, still-uninterpreted stroke footer is present in some files.
-    // The enclosing `strk` length safely bounds it and `s2ly` preserves it.
+    // The regular-point zero is followed by groups of pressure-only controls.
+    // Each group starts with the ID of the regular point at the beginning of
+    // its curve segment, contains 24-byte controls, and ends with zero. A zero
+    // segment ID terminates the groups. Further footer data remains preserved
+    // by the enclosing `strk` record and is intentionally left uninterpreted.
+    offset += 4;
+    let mut pressure_points = Vec::new();
+    while offset + 4 <= value.len() {
+        let segment_start_point_id = u32::from_le_bytes(read(value, offset)?);
+        if segment_start_point_id == 0 {
+            break;
+        }
+        if !points
+            .iter()
+            .any(|point| point.id == segment_start_point_id)
+        {
+            break;
+        }
+        offset += 4;
+        loop {
+            let pressure_point_id = u32::from_le_bytes(read(value, offset)?);
+            if pressure_point_id == 0 {
+                offset += 4;
+                break;
+            }
+            let end = offset
+                .checked_add(24)
+                .ok_or_else(|| layer_error("linework pressure point overflow"))?;
+            if end > value.len() {
+                return Err(layer_error("truncated linework pressure point"));
+            }
+            pressure_points.push(Sai2PressurePoint {
+                id: pressure_point_id,
+                segment_start_point_id,
+                curve_parameter: read_f64(value, offset + 4)?,
+                pressure: read_f32(value, offset + 12)?,
+                width_scale: read_f32(value, offset + 16)?,
+                flags: u32::from_le_bytes(read(value, offset + 20)?),
+            });
+            offset = end;
+        }
+    }
     result.strokes.push(Sai2Stroke {
         id,
         origin,
@@ -712,8 +826,11 @@ fn decode_stroke_container(value: &[u8], result: &mut Sai2Linework) -> Result<()
         color_bgra14,
         brush_size,
         brush_density,
-        ink_opacity,
+        minimum_density,
+        paper_texture_strength,
+        pen_tip_type,
         points,
+        pressure_points,
     });
     Ok(())
 }
@@ -733,13 +850,10 @@ fn rasterize_linework(
         let Some(brush_size) = stroke.brush_size.filter(|size| *size > 0.0) else {
             continue;
         };
-        let mut color = color14_to_rgba(stroke.color_bgra14.unwrap_or([0, 0, 0, 0x4000]));
-        if let Some(density) = stroke.brush_density {
-            color[3] = (f32::from(color[3]) * density).round() as u8;
-        }
-        if let Some(opacity) = stroke.ink_opacity {
-            color[3] = (f32::from(color[3]) * opacity).round() as u8;
-        }
+        let color = color14_to_rgba(stroke.color_bgra14.unwrap_or([0, 0, 0, 0x4000]));
+        let density = stroke.brush_density.unwrap_or(1.0);
+        let pen_tip_type = stroke.pen_tip_type.unwrap_or(4);
+        let stamp_alpha = linework_stamp_alpha(density, pen_tip_type);
         let points = &stroke.points;
         if points.len() == 1 {
             let point = &points[0];
@@ -751,11 +865,22 @@ fn rasterize_linework(
                 absolute_point(stroke.origin, point.position),
                 radius,
                 color,
+                stamp_alpha,
+                pen_tip_type,
             );
+            continue;
         }
+        let mut samples = Vec::new();
         for pair in points.windows(2) {
             let first = &pair[0];
             let second = &pair[1];
+            let mut pressure_points = stroke
+                .pressure_points
+                .iter()
+                .filter(|point| point.segment_start_point_id == first.id)
+                .collect::<Vec<_>>();
+            pressure_points
+                .sort_by(|left, right| left.curve_parameter.total_cmp(&right.curve_parameter));
             let curve = [
                 absolute_point(stroke.origin, first.position),
                 absolute_point(stroke.origin, first.control_after),
@@ -765,22 +890,236 @@ fn rasterize_linework(
             let control_length = distance(curve[0], curve[1])
                 + distance(curve[1], curve[2])
                 + distance(curve[2], curve[3]);
-            let steps = ((control_length / 0.35).ceil() as usize).clamp(1, 16_384);
-            for step in 0..=steps {
-                let t = step as f64 / steps as f64;
-                let point = cubic_point(curve, t);
-                let radius = f64::from(stroke_radius(brush_size, first))
-                    .mul_add(1.0 - t, f64::from(stroke_radius(brush_size, second)) * t)
-                    as f32;
-                draw_linework_disc(&mut pixels, width, height, point, radius, color);
+            let steps = ((control_length / 0.1).ceil() as usize).clamp(1, 32_768);
+            let curve_samples = (0..=steps)
+                .map(|step| cubic_point(curve, step as f64 / steps as f64))
+                .collect::<Vec<_>>();
+            let total_length = curve_samples
+                .windows(2)
+                .map(|pair| distance(pair[0], pair[1]))
+                .sum::<f64>();
+            let mut traversed = 0.0;
+            for (step, point) in curve_samples.iter().copied().enumerate() {
+                if step > 0 {
+                    traversed += distance(curve_samples[step - 1], point);
+                }
+                let segment_position = if total_length > f64::EPSILON {
+                    traversed / total_length
+                } else {
+                    step as f64 / steps as f64
+                };
+                let radius = segment_radius(
+                    brush_size,
+                    first,
+                    second,
+                    &pressure_points,
+                    segment_position,
+                );
+                if samples.is_empty() || step > 0 {
+                    samples.push((point, radius));
+                }
             }
         }
+        stamp_linework_samples(
+            &mut pixels,
+            width,
+            height,
+            &samples,
+            color,
+            stamp_alpha,
+            density,
+            pen_tip_type,
+        );
     }
     Ok(RgbaImage::from_pixels(width, height, pixels))
 }
 
 fn stroke_radius(brush_size: f32, point: &Sai2StrokePoint) -> f32 {
     (brush_size * point.pressure.max(0.0) * point.width_scale.max(0.0) * 0.5).max(0.0)
+}
+
+fn pressure_radius(brush_size: f32, point: &Sai2PressurePoint) -> f32 {
+    (brush_size * point.pressure.max(0.0) * point.width_scale.max(0.0) * 0.5).max(0.0)
+}
+
+fn segment_radius(
+    brush_size: f32,
+    first: &Sai2StrokePoint,
+    second: &Sai2StrokePoint,
+    pressure_points: &[&Sai2PressurePoint],
+    t: f64,
+) -> f32 {
+    let mut previous_t = 0.0;
+    let mut previous_radius = stroke_radius(brush_size, first);
+    for point in pressure_points {
+        let point_t = point.curve_parameter.clamp(0.0, 1.0);
+        if t <= point_t {
+            return interpolate_radius(
+                previous_t,
+                previous_radius,
+                point_t,
+                pressure_radius(brush_size, point),
+                t,
+            );
+        }
+        previous_t = point_t;
+        previous_radius = pressure_radius(brush_size, point);
+    }
+    interpolate_radius(
+        previous_t,
+        previous_radius,
+        1.0,
+        stroke_radius(brush_size, second),
+        t,
+    )
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn interpolate_radius(
+    first_t: f64,
+    first_radius: f32,
+    second_t: f64,
+    second_radius: f32,
+    t: f64,
+) -> f32 {
+    let span = second_t - first_t;
+    if span <= f64::EPSILON {
+        return second_radius;
+    }
+    let local_t = ((t - first_t) / span).clamp(0.0, 1.0);
+    f64::from(first_radius).mul_add(1.0 - local_t, f64::from(second_radius) * local_t) as f32
+}
+
+fn linework_stamp_alpha(density: f32, pen_tip_type: u32) -> f32 {
+    // SAI2 spaces linework stamps at roughly 1/20 of their diameter. A dab's
+    // alpha is chosen so 20 source-over applications converge to the selected
+    // brush density. Full density is represented by a finite 10-bit target,
+    // which also reproduces the observed alpha of an isolated click.
+    let target = density.clamp(0.0, 1.0).min(1023.0 / 1024.0);
+    1.0 - (1.0 - target).powf(pen_tip_profile(pen_tip_type).opacity_exponent)
+}
+
+#[derive(Clone, Copy)]
+struct PenTipProfile {
+    opacity_exponent: f32,
+    solid_radius: f64,
+    support_radius: f64,
+    spacing_scale: f64,
+}
+
+const fn pen_tip_profile(pen_tip_type: u32) -> PenTipProfile {
+    match pen_tip_type {
+        0 => PenTipProfile {
+            opacity_exponent: 0.529_391_35,
+            solid_radius: 0.0,
+            support_radius: 1.13,
+            spacing_scale: 0.347,
+        },
+        1 => PenTipProfile {
+            opacity_exponent: 0.151_053_77,
+            solid_radius: 0.43,
+            support_radius: 1.10,
+            spacing_scale: 0.666,
+        },
+        2 => PenTipProfile {
+            opacity_exponent: 0.081_942_774,
+            solid_radius: 0.67,
+            support_radius: 1.07,
+            spacing_scale: 0.798,
+        },
+        3 => PenTipProfile {
+            opacity_exponent: 0.052_267_823,
+            solid_radius: 0.83,
+            support_radius: 1.03,
+            spacing_scale: 0.723,
+        },
+        _ => PenTipProfile {
+            opacity_exponent: 0.046_687_644,
+            solid_radius: 0.90,
+            support_radius: 1.03,
+            spacing_scale: 0.972,
+        },
+    }
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
+fn stamp_linework_samples(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    samples: &[([f64; 2], f32)],
+    color: [u8; 4],
+    stamp_alpha: f32,
+    density: f32,
+    pen_tip_type: u32,
+) {
+    let Some(&(mut cursor, mut cursor_radius)) = samples.first() else {
+        return;
+    };
+    draw_linework_disc(
+        pixels,
+        width,
+        height,
+        cursor,
+        cursor_radius,
+        color,
+        stamp_alpha,
+        pen_tip_type,
+    );
+    let mut until_stamp = linework_stamp_spacing(cursor_radius, density, stamp_alpha, pen_tip_type);
+    let mut last_stamp = cursor;
+    for &(target, target_radius) in &samples[1..] {
+        let mut remaining = distance(cursor, target);
+        while remaining + f64::EPSILON >= until_stamp {
+            let fraction = (until_stamp / remaining).clamp(0.0, 1.0);
+            cursor = [
+                (target[0] - cursor[0]).mul_add(fraction, cursor[0]),
+                (target[1] - cursor[1]).mul_add(fraction, cursor[1]),
+            ];
+            cursor_radius = f64::from(target_radius - cursor_radius)
+                .mul_add(fraction, f64::from(cursor_radius)) as f32;
+            draw_linework_disc(
+                pixels,
+                width,
+                height,
+                cursor,
+                cursor_radius,
+                color,
+                stamp_alpha,
+                pen_tip_type,
+            );
+            last_stamp = cursor;
+            remaining = distance(cursor, target);
+            until_stamp = linework_stamp_spacing(cursor_radius, density, stamp_alpha, pen_tip_type);
+        }
+        until_stamp -= remaining;
+        cursor = target;
+        cursor_radius = target_radius;
+    }
+    let &(last, last_radius) = samples.last().expect("non-empty samples");
+    if distance(last_stamp, last) > 0.01 {
+        draw_linework_disc(
+            pixels,
+            width,
+            height,
+            last,
+            last_radius,
+            color,
+            stamp_alpha,
+            pen_tip_type,
+        );
+    }
+}
+
+fn linework_stamp_spacing(radius: f32, density: f32, stamp_alpha: f32, pen_tip_type: u32) -> f64 {
+    let target = f64::from(density.clamp(0.0, 1.0).min(1023.0 / 1024.0));
+    let quantized_alpha = f64::from((stamp_alpha.clamp(0.0, 1.0) * 255.0).floor()) / 255.0;
+    if target <= 0.0 || quantized_alpha <= 0.0 {
+        return (f64::from(radius.max(0.0)) / 10.0).max(0.5);
+    }
+    let overlap_count = (-target).ln_1p() / (-quantized_alpha).ln_1p();
+    (f64::from(radius.max(0.0)) * 2.0 / overlap_count * pen_tip_profile(pen_tip_type).spacing_scale)
+        .max(0.5)
 }
 
 fn absolute_point(origin: [f64; 2], point: [f64; 2]) -> [f64; 2] {
@@ -822,7 +1161,8 @@ fn color14_to_rgba(color: [u16; 4]) -> [u8; 4] {
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    clippy::too_many_arguments
 )]
 fn draw_linework_disc(
     pixels: &mut [u8],
@@ -831,12 +1171,12 @@ fn draw_linework_disc(
     center: [f64; 2],
     radius: f32,
     color: [u8; 4],
+    stamp_alpha: f32,
+    pen_tip_type: u32,
 ) {
     let radius = f64::from(radius);
-    // SAI2 linework uses a soft circular sampling profile even for the pen
-    // tool. The observed fringe extends a little beyond the nominal radius;
-    // applying coverage across that full support closely matches its export.
-    let edge = radius + 0.65;
+    let profile = pen_tip_profile(pen_tip_type);
+    let edge = radius.mul_add(profile.support_radius, 0.5);
     let min_x = ((center[0] - edge).floor() as i64).clamp(0, i64::from(width));
     let max_x = ((center[0] + edge).ceil() as i64).clamp(0, i64::from(width));
     let min_y = ((center[1] - edge).floor() as i64).clamp(0, i64::from(height));
@@ -844,20 +1184,44 @@ fn draw_linework_disc(
     for y in min_y..max_y {
         for x in min_x..max_x {
             let pixel_center = [x as f64 + 0.5, y as f64 + 0.5];
-            let normalized = ((edge - distance(center, pixel_center)) / edge).clamp(0.0, 1.0);
-            let profile = (normalized / 0.85).clamp(0.0, 1.0);
-            let coverage = profile * profile * (3.0 - 2.0 * profile);
-            let alpha = (coverage * f64::from(color[3])).round() as u8;
+            let normalized_radius = distance(center, pixel_center) / radius.max(f64::EPSILON);
+            let profile_position = ((normalized_radius - profile.solid_radius)
+                / (profile.support_radius - profile.solid_radius))
+                .clamp(0.0, 1.0);
+            let smooth = profile_position * profile_position * (3.0 - 2.0 * profile_position);
+            let profile_coverage = 1.0 - smooth;
+            let boundary_coverage = (edge - distance(center, pixel_center)).clamp(0.0, 1.0);
+            let coverage = profile_coverage.min(boundary_coverage);
+            let alpha = (coverage * f64::from(color[3]) * f64::from(stamp_alpha.clamp(0.0, 1.0)))
+                .floor() as u8;
             let index = (usize::try_from(y).expect("non-negative y")
                 * usize::try_from(width).expect("u32 width fits usize")
                 + usize::try_from(x).expect("non-negative x"))
                 * CHANNELS;
-            if alpha > pixels[index + 3] {
-                pixels[index..index + 3].copy_from_slice(&color[..3]);
-                pixels[index + 3] = alpha;
-            }
+            source_over_pixel(&mut pixels[index..index + CHANNELS], color, alpha);
         }
     }
+}
+
+fn source_over_pixel(destination: &mut [u8], color: [u8; 4], source_alpha: u8) {
+    if source_alpha == 0 {
+        return;
+    }
+    let source_alpha = u32::from(source_alpha);
+    let destination_alpha = u32::from(destination[3]);
+    let inverse = 255 - source_alpha;
+    let output_alpha = source_alpha + (destination_alpha * inverse + 127) / 255;
+    for channel in 0..3 {
+        let source = u32::from(color[channel]) * source_alpha;
+        let destination_premultiplied =
+            u32::from(destination[channel]) * destination_alpha * inverse / 255;
+        destination[channel] = u8::try_from(
+            ((source + destination_premultiplied + output_alpha / 2) / output_alpha.max(1))
+                .min(255),
+        )
+        .expect("source-over color fits in u8");
+    }
+    destination[3] = u8::try_from(output_alpha).expect("source-over alpha fits in u8");
 }
 
 fn decode_shape(body: &[u8]) -> Result<Sai2Shape, ParseError> {
@@ -1438,6 +1802,263 @@ mod tests {
     }
 
     #[test]
+    fn decodes_pressure_only_points_grouped_by_segment() {
+        let mut value = Vec::new();
+        value.extend_from_slice(&1_u32.to_le_bytes());
+        value.extend_from_slice(&2_u32.to_le_bytes());
+        value.extend_from_slice(&[0; 4]); // parameter terminator
+        value.extend_from_slice(&1_u32.to_le_bytes()); // container identifier
+        value.extend_from_slice(&1_u32.to_le_bytes()); // stroke identifier
+        value.extend_from_slice(&2_u32.to_le_bytes());
+        value.extend_from_slice(&0_u32.to_le_bytes());
+        value.extend_from_slice(&0_f64.to_le_bytes()); // origin X
+        value.extend_from_slice(&0_f64.to_le_bytes()); // origin Y
+        value.extend_from_slice(&2_u32.to_le_bytes()); // observed stroke kind
+
+        for (id, x) in [(7_u32, 0.0_f64), (9, 100.0)] {
+            value.extend_from_slice(&id.to_le_bytes());
+            value.extend_from_slice(&x.to_le_bytes());
+            value.extend_from_slice(&0_f64.to_le_bytes());
+            value.extend_from_slice(&x.to_le_bytes());
+            value.extend_from_slice(&0_f64.to_le_bytes());
+            value.extend_from_slice(&x.to_le_bytes());
+            value.extend_from_slice(&0_f64.to_le_bytes());
+            value.extend_from_slice(&1_f32.to_le_bytes());
+            value.extend_from_slice(&1_f32.to_le_bytes());
+            value.extend_from_slice(&0_u32.to_le_bytes());
+        }
+        value.extend_from_slice(&0_u32.to_le_bytes()); // regular-point terminator
+        value.extend_from_slice(&7_u32.to_le_bytes()); // segment starts at point 7
+        value.extend_from_slice(&3_u32.to_le_bytes()); // pressure-point ID
+        value.extend_from_slice(&0.25_f64.to_le_bytes());
+        value.extend_from_slice(&5_f32.to_le_bytes());
+        value.extend_from_slice(&1_f32.to_le_bytes());
+        value.extend_from_slice(&1_u32.to_le_bytes());
+        value.extend_from_slice(&0_u32.to_le_bytes()); // segment-point terminator
+        value.extend_from_slice(&0_u32.to_le_bytes()); // segment-group terminator
+        value.extend_from_slice(&0_u32.to_le_bytes()); // still-unknown footer section
+
+        let mut body = Vec::new();
+        body.extend_from_slice(b"strk");
+        body.extend_from_slice(&u32::try_from(value.len()).unwrap().to_le_bytes());
+        body.extend_from_slice(&value);
+        body.extend_from_slice(&[0; 4]);
+
+        let linework = decode_linework(&body).expect("pressure point should decode");
+        let stroke = &linework.strokes()[0];
+        assert_eq!(stroke.points().len(), 2);
+        assert_eq!(stroke.pressure_points().len(), 1);
+        let pressure = &stroke.pressure_points()[0];
+        assert_eq!(pressure.id(), 3);
+        assert_eq!(pressure.segment_start_point_id(), 7);
+        assert_eq!(pressure.curve_parameter().to_bits(), 0.25_f64.to_bits());
+        assert_eq!(pressure.pressure().to_bits(), 5_f32.to_bits());
+        assert_eq!(pressure.width_scale().to_bits(), 1_f32.to_bits());
+        assert_eq!(pressure.flags(), 1);
+    }
+
+    #[test]
+    fn pressure_only_point_controls_segment_radius() {
+        let first = Sai2StrokePoint {
+            id: 1,
+            position: [0.0, 0.0],
+            control_before: [0.0, 0.0],
+            control_after: [0.0, 0.0],
+            pressure: 1.0,
+            width_scale: 1.0,
+            flags: 0,
+        };
+        let second = Sai2StrokePoint {
+            id: 2,
+            position: [100.0, 0.0],
+            control_before: [100.0, 0.0],
+            control_after: [100.0, 0.0],
+            pressure: 1.0,
+            width_scale: 1.0,
+            flags: 0,
+        };
+        let pressure = Sai2PressurePoint {
+            id: 1,
+            segment_start_point_id: 1,
+            curve_parameter: 0.5,
+            pressure: 5.0,
+            width_scale: 1.0,
+            flags: 0,
+        };
+
+        assert_eq!(
+            segment_radius(20.0, &first, &second, &[], 0.5).to_bits(),
+            10.0_f32.to_bits()
+        );
+        assert_eq!(
+            segment_radius(20.0, &first, &second, &[&pressure], 0.5).to_bits(),
+            50.0_f32.to_bits()
+        );
+        assert_eq!(
+            segment_radius(20.0, &first, &second, &[&pressure], 0.25).to_bits(),
+            30.0_f32.to_bits()
+        );
+    }
+
+    #[test]
+    fn linework_density_matches_observed_dab_alpha_and_spacing() {
+        let alpha_byte = |density| (linework_stamp_alpha(density, 4) * 255.0).floor();
+        assert_eq!(alpha_byte(0.25).to_bits(), 3.0_f32.to_bits());
+        assert_eq!(alpha_byte(0.5).to_bits(), 8.0_f32.to_bits());
+        assert_eq!(alpha_byte(1.0).to_bits(), 70.0_f32.to_bits());
+
+        let half = linework_stamp_alpha(0.5, 4);
+        let spacing = linework_stamp_spacing(10.0, 0.5, half, 4);
+        assert!((0.88..0.93).contains(&spacing));
+        let minimum = linework_stamp_spacing(1.0, 1.0, linework_stamp_alpha(1.0, 4), 4);
+        assert!((minimum - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn decodes_owned_pen_tip_types_when_available() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/private/pen type.sai2");
+        let Ok(bytes) = std::fs::read(path) else {
+            return;
+        };
+        let layers = decode_layers(&bytes, DecodeLimits::default()).unwrap();
+        let strokes = layers[0].linework().unwrap().strokes();
+        assert_eq!(
+            strokes
+                .iter()
+                .map(Sai2Stroke::pen_tip_type)
+                .collect::<Vec<_>>(),
+            [
+                Some(0),
+                Some(1),
+                Some(2),
+                Some(3),
+                Some(4),
+                Some(4),
+                Some(3),
+                Some(2),
+                Some(1),
+                Some(0)
+            ]
+        );
+        assert!(
+            strokes
+                .iter()
+                .all(|stroke| stroke.minimum_density() == Some(1.0))
+        );
+        assert!(
+            strokes
+                .iter()
+                .all(|stroke| stroke.paper_texture_strength() == Some(0.95))
+        );
+        let expected_alpha = [248.0_f32, 165.0, 110.0, 77.0, 70.0];
+        for (pen_tip_type, expected) in (0_u32..).zip(expected_alpha) {
+            let actual = (linework_stamp_alpha(1.0, pen_tip_type) * 255.0).floor();
+            assert_eq!(actual.to_bits(), expected.to_bits());
+        }
+    }
+
+    #[test]
+    fn pressure_position_uses_normalized_curve_length() {
+        let point = |id, x| Sai2StrokePoint {
+            id,
+            position: [x, 60.0],
+            control_before: [x, 60.0],
+            control_after: [x, 60.0],
+            pressure: 1.0,
+            width_scale: 1.0,
+            flags: 0,
+        };
+        let linework = Sai2Linework {
+            color_bgra14: Some([0, 0, 0, 0x4000]),
+            brush_size: Some(20.0),
+            strokes: vec![Sai2Stroke {
+                id: 1,
+                origin: [0.0, 0.0],
+                kind: 2,
+                color_bgra14: Some([0, 0, 0, 0x4000]),
+                brush_size: Some(20.0),
+                brush_density: Some(1.0),
+                minimum_density: Some(1.0),
+                paper_texture_strength: Some(1.0),
+                pen_tip_type: Some(4),
+                points: vec![point(1, 10.0), point(2, 110.0)],
+                pressure_points: vec![Sai2PressurePoint {
+                    id: 1,
+                    segment_start_point_id: 1,
+                    curve_parameter: 0.25,
+                    pressure: 5.0,
+                    width_scale: 1.0,
+                    flags: 0,
+                }],
+            }],
+        };
+
+        let image = rasterize_linework(&linework, 121, 121).unwrap();
+        let alpha_sum = |x: usize| {
+            image
+                .pixels()
+                .chunks_exact(CHANNELS)
+                .skip(x)
+                .step_by(121)
+                .map(|pixel| u32::from(pixel[3]))
+                .sum::<u32>()
+        };
+        let widest_x = (11..110).max_by_key(|x| alpha_sum(*x)).unwrap();
+        assert!(
+            (30..=42).contains(&widest_x),
+            "widest point should be one quarter of the 100 px segment, got X={widest_x}"
+        );
+    }
+
+    #[test]
+    fn decodes_owned_pressure_position_fixture_when_available() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/private/pressure-position-parameter.sai2");
+        let Ok(bytes) = std::fs::read(path) else {
+            return;
+        };
+        let layers = decode_layers(&bytes, DecodeLimits::default()).unwrap();
+
+        let straight = layers.iter().find(|layer| layer.id() == 3).unwrap();
+        let stroke = &straight.linework().unwrap().strokes()[0];
+        assert_eq!(stroke.points().len(), 2);
+        assert_eq!(stroke.pressure_points().len(), 1);
+        let pressure = &stroke.pressure_points()[0];
+        assert_eq!(pressure.segment_start_point_id(), 1);
+        assert!((pressure.curve_parameter() - 0.5).abs() < f64::EPSILON * 2.0);
+        assert_eq!(pressure.pressure().to_bits(), 5_f32.to_bits());
+
+        let uneven = layers.iter().find(|layer| layer.id() == 8).unwrap();
+        let pressure = &uneven.linework().unwrap().strokes()[0].pressure_points()[0];
+        assert_eq!(pressure.segment_start_point_id(), 3);
+        assert!((pressure.curve_parameter() - 0.416_479_121_585_796_8).abs() < 1.0e-15);
+
+        let curved = layers.iter().find(|layer| layer.id() == 4).unwrap();
+        let pressure = curved.linework().unwrap().strokes()[0].pressure_points();
+        assert_eq!(pressure.len(), 3);
+        assert_eq!(
+            pressure
+                .iter()
+                .map(Sai2PressurePoint::segment_start_point_id)
+                .collect::<Vec<_>>(),
+            [3, 4, 4]
+        );
+
+        let image = straight.image().expect("linework should rasterize");
+        let alpha_at = |x: usize, y: usize| image.pixels()[(y * 300 + x) * CHANNELS + 3];
+        assert_eq!(
+            alpha_at(85, 54),
+            0,
+            "endpoint should retain its 20 px width"
+        );
+        assert!(
+            alpha_at(85, 159) > 32,
+            "pressure-only midpoint should expand the line"
+        );
+    }
+
+    #[test]
     fn decodes_all_linework_chunks_from_owned_large_fixture_when_available() {
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../outputs/test.sai2");
@@ -1643,7 +2264,8 @@ mod tests {
         assert_eq!(stroke.color_bgra14(), linework.color_bgra14());
         assert_eq!(stroke.brush_size(), linework.brush_size());
         assert_eq!(stroke.brush_density(), Some(1.0));
-        assert_eq!(stroke.ink_opacity(), Some(0.95));
+        assert_eq!(stroke.minimum_density(), Some(0.0));
+        assert_eq!(stroke.paper_texture_strength(), Some(0.95));
         assert_eq!(stroke.kind(), 2);
         assert_eq!(stroke.points().len(), 13);
         assert_eq!(
@@ -1738,7 +2360,7 @@ mod tests {
             linework
                 .strokes()
                 .iter()
-                .all(|stroke| stroke.ink_opacity() == Some(0.95))
+                .all(|stroke| stroke.paper_texture_strength() == Some(0.95))
         );
         let pixels = layers[0]
             .image()

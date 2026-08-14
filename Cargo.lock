@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "sai2-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "sai2-core",
  "sai2-png",
@@ -13,15 +13,15 @@ dependencies = [
 
 [[package]]
 name = "sai2-core"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "sai2-png"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "sai2-psd"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "sai2-core",
 ]

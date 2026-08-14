@@ -45,10 +45,13 @@ the first tested slice of layered export:
   clipping byte and transparency-protected flag;
 - decodes observed grayscale `mpix` layer masks and writes native PSD user-mask
   channels;
-- exposes observed linework Bezier controls, pressure, width scale, brush size,
-  and color as typed Rust data;
+- exposes observed linework Bezier controls, direction-and-pressure points,
+  pressure-only control points, width scale, brush size, minimum density,
+  paper-texture strength, pen-tip type, and color as typed Rust data;
 - rasterizes decoded pressure-sensitive linework into independent RGBA PSD
-  layers while retaining the original editable vector payload in `s2ly`;
+  layers, including arc-length pressure interpolation and the five observed
+  SAI2 pen-tip profiles, while retaining the original editable vector payload
+  in `s2ly`;
 - exposes observed shape paths, Bezier controls, and fill color as typed Rust
   data;
 - writes the observed single-path SAI2 circle, triangle, square, and their
@@ -91,8 +94,8 @@ installer. Extract the complete ZIP before running
 Maintainers can publish a release by pushing a version tag:
 
 ```console
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 The tagged source is tested and compiled on GitHub's Windows x64 runner, then
