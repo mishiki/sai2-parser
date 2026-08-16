@@ -1,7 +1,10 @@
 # sai2-parser
 
-An experimental, unofficial reader for SYSTEMAX PaintTool SAI Ver.2 (`.sai2`)
-files, written in Rust.
+**An experimental, unofficial PaintTool SAI 2 (`.sai2`) parser and SAI2-to-PSD/PNG converter, written in Rust.**
+
+`sai2-parser` reads files created by SYSTEMAX PaintTool SAI Ver.2 and provides tools for inspecting them, extracting their saved composite image to PNG, and converting supported document structure to layered PSD.
+
+Current work includes raster layers, folders, masks, blend modes, clipping groups, linework, vector shapes, and preservation of still-unknown SAI2 layer data for future decoding.
 
 The project exists to support interoperability and long-term preservation of
 files that users own. It is not affiliated with or endorsed by SYSTEMAX, and it
